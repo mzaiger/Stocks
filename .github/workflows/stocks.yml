@@ -1,0 +1,64 @@
+name: Update stocks
+
+on:
+  # Timing comes from Google Apps Script (apps-script/Code.gs), which sends this event every 15 minutes
+  # during the market session. GitHub's own cron schedule is not used because it is not reliable.
+  repository_dispatch:
+    types: [trigger-stocks-pull]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Run even when the market is closed (for testing)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+# One run at a time, so two runs never write or commit at the same moment.
+concurrency:
+  group: stocks-data
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      INTERVAL_MIN: "15"        # keep equal to the Apps Script trigger interval
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Take a snapshot and rebuild the board
+        env:
+          FMP_Key: ${{ secrets.FMP_Key }}
+          FORCE: ${{ (inputs.force || github.event.client_payload.force) && '1' || '0' }}
+        run: python stocks.py run
+
+      - name: Commit data
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data state
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "Update stocks"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin "$GITHUB_REF_NAME" && git push; then
+              exit 0
+            fi
+            echo "Push attempt $attempt failed; retrying..."
+            sleep $((RANDOM % 6 + 3))
+          done
+          echo "Could not push after 5 attempts." >&2
+          exit 1
