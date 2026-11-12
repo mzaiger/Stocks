@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=0.8">
+<title>Stock Board</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Ctext y=%27.9em%27 font-size=%2790%27%3E%F0%9F%93%88%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#FFFFFF; --panel:#F2F7FD; --line:#D9E5F2; --text:#10233F; --text-dim:#64798E; --blue:#1B63E0; --warm:#F2A93B; --up:#1E9E5A; --down:#D6403A; --radius:10px; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; background:var(--bg); color:var(--text); font-family:'Inter',system-ui,sans-serif; -webkit-font-smoothing:antialiased; }
+  body { min-height:100vh; background-image: radial-gradient(circle at 12% 0%, rgba(27,99,224,0.07), transparent 45%), radial-gradient(circle at 88% 6%, rgba(27,99,224,0.05), transparent 40%); }
+  header { padding:22px 24px 4px; max-width:1700px; margin:0 auto; }
+  .eyebrow-row { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px; }
+  .eyebrow { font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--blue); margin:0; }
+  .updated-row { display:flex; align-items:center; gap:10px; font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--text-dim); }
+  button { font-family:inherit; cursor:pointer; }
+  .refresh-btn, .sort-btn { background:var(--panel); border:1px solid var(--line); color:var(--text-dim); border-radius:6px; padding:6px 11px; font-family:'IBM Plex Mono',monospace; font-size:12px; }
+  .refresh-btn { color:var(--blue); }
+  .refresh-btn:hover { border-color:var(--blue); }
+  .refresh-btn:disabled { opacity:.5; cursor:default; }
+  .sort-btn.active { border-color:var(--blue); color:var(--blue); }
+  h1 { font-family:'Oswald',sans-serif; font-weight:700; text-transform:uppercase; letter-spacing:.02em; font-size:clamp(26px,4vw,38px); line-height:1; margin:0 0 6px; }
+  .sub { color:var(--text-dim); font-size:13px; margin:0; max-width:900px; line-height:1.5; }
+  main { max-width:1700px; margin:0 auto; padding:0 24px 60px; }
+  .controls { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px 16px; margin:4px 0 14px; position:sticky; top:0; padding:10px 0; background:linear-gradient(var(--bg) 78%, transparent); z-index:10; }
+  .tabs { display:flex; flex-wrap:wrap; gap:4px; background:var(--panel); border:1px solid var(--line); border-radius:999px; padding:3px; }
+  .tab-btn { font-family:'Oswald',sans-serif; font-weight:600; letter-spacing:.04em; text-transform:uppercase; font-size:12.5px; color:var(--text-dim); background:transparent; border:none; border-radius:999px; padding:7px 14px; white-space:nowrap; }
+  .tab-btn:hover { color:var(--text); }
+  .tab-btn.active { background:var(--blue); color:#fff; }
+  .tabs.sources .tab-btn { font-size:14px; padding:8px 18px; }
+  .timeframes { display:flex; flex-direction:column; align-items:stretch; gap:6px; max-width:100%; }
+  @media (max-width:520px) { .tabs.sources .tab-btn { padding:8px 10px; font-size:13px; } #tabs .tab-btn { padding:7px 8px; font-size:12px; } }
+  .sortbox { display:flex; align-items:center; gap:8px; font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--text-dim); }
+  .count { font-family:'IBM Plex Mono',monospace; color:var(--text-dim); font-size:12px; margin:0 0 12px; line-height:1.5; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:14px; }
+  .card { position:relative; display:flex; flex-direction:column; background:#fff; border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; box-shadow:0 1px 2px rgba(16,35,63,.04); }
+  .card.ghost { opacity:.7; }
+  .thumb-wrap { position:relative; height:140px; background:var(--panel); display:flex; align-items:center; justify-content:center; }
+  .thumb-wrap img { width:96px; height:96px; object-fit:contain; border-radius:16px; background:#fff; padding:10px; border:1px solid var(--line); }
+  .thumb-fallback { width:96px; height:96px; border-radius:16px; background:#fff; border:1px solid var(--line); display:flex; align-items:center; justify-content:center; font-family:'Oswald',sans-serif; font-size:22px; letter-spacing:.04em; color:var(--blue); }
+  .rank-pill { position:absolute; top:8px; right:8px; z-index:2; background:rgba(255,255,255,.93); border:1px solid var(--line); border-radius:999px; padding:3px 10px; font-family:'IBM Plex Mono',monospace; font-size:15px; font-weight:500; }
+  .fav-toggle { position:absolute; top:8px; left:8px; z-index:3; width:38px; height:38px; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,.93); border:1px solid var(--line); border-radius:999px; cursor:pointer; }
+  .fav-toggle input { position:absolute; inset:0; opacity:0; margin:0; cursor:pointer; }
+  .fav-star { font-size:20px; line-height:1; color:var(--text-dim); pointer-events:none; transition:color .15s ease, transform .15s ease; }
+  .fav-toggle input:checked ~ .fav-star { color:var(--warm); transform:scale(1.1); }
+  .fav-toggle input:focus-visible ~ .fav-star { outline:2px solid var(--blue); border-radius:4px; }
+  .body { padding:12px 14px 13px; display:flex; flex-direction:column; flex:1; }
+  .ticker-row { display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin:0 0 2px; }
+  .ticker { font-family:'Oswald',sans-serif; font-weight:700; font-size:22px; letter-spacing:.02em; margin:0; }
+  .ticker a { color:inherit; text-decoration:none; border-bottom:2px solid transparent; }
+  .ticker a:hover { color:var(--blue); border-bottom-color:var(--blue); }
+  .ticker a:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
+  .price { font-family:'IBM Plex Mono',monospace; font-size:15px; font-weight:600; }
+  .name { font-size:12.5px; line-height:1.3; color:var(--text-dim); margin:0 0 10px; overflow-wrap:anywhere; min-height:1.3em; }
+  .chips { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; width:100%; margin:0; }
+  .chip { background:var(--panel); border:1px solid var(--line); border-radius:7px; padding:8px 2px; min-width:0; width:100%; text-align:center; font-family:'IBM Plex Mono',monospace; font-size:14.5px; font-weight:600; }
+  .chip small { display:block; font-size:11px; font-weight:500; color:var(--text-dim); letter-spacing:.06em; text-transform:uppercase; margin-bottom:2px; }
+  .chip .sub2 { display:block; font-size:10.5px; font-weight:500; color:var(--text-dim); margin-top:1px; }
+  .up { color:var(--up); } .down { color:var(--down); }
+  .scorebar { display:flex; align-items:center; gap:8px; margin:10px 0 0; font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--text-dim); }
+  .scorebar b { font-size:20px; color:var(--text); font-weight:600; }
+  .meter { flex:1; height:6px; background:var(--panel); border:1px solid var(--line); border-radius:999px; overflow:hidden; }
+  .meter i { display:block; height:100%; background:var(--blue); }
+  .detail { font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--text-dim); margin:6px 0 0; line-height:1.55; }
+  .detail b { font-weight:600; color:var(--text); }
+  .rk { font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--text-dim); margin:8px 0 0; line-height:1.55; }
+  .rk b { color:var(--text); font-weight:600; }
+  .seen { font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--text-dim); margin:6px 0 0; line-height:1.55; }
+  .seen b { color:var(--text); font-weight:600; }
+  .seen .ago { color:var(--blue); font-weight:600; white-space:nowrap; }
+  .watch-label { font-family:'IBM Plex Mono',monospace; font-size:11.5px; font-weight:600; color:#1E7A4D; margin:10px 0 0; }
+  .links { display:grid; gap:6px; width:100%; margin-top:6px; margin-top:auto; padding-top:6px; }
+  .links a { display:flex; align-items:center; justify-content:center; gap:3px; min-width:0; height:42px; background:var(--panel); border:1px solid var(--line); border-radius:8px; color:var(--blue); text-decoration:none; font-family:'IBM Plex Mono',monospace; font-size:14px; font-weight:600; transition:border-color .15s ease, background .15s ease; }
+  .links a:hover { border-color:var(--blue); background:#fff; }
+  .links a:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
+  .links img { width:22px; height:22px; display:block; flex:none; }
+  .links .arrow { font-size:15px; line-height:1; }
+  .empty { text-align:center; padding:70px 20px; color:var(--text-dim); font-family:'IBM Plex Mono',monospace; font-size:13px; grid-column:1/-1; line-height:1.6; }
+  .foot { margin-top:28px; padding-top:14px; border-top:1px solid var(--line); font-size:12px; line-height:1.6; color:var(--text-dim); }
+  @media (max-width:700px) { .links .arrow { display:none; } .thumb-wrap { height:118px; } .thumb-wrap img, .thumb-fallback { width:80px; height:80px; } header, main { padding-left:14px; padding-right:14px; } .grid { grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:10px; } .ticker { font-size:19px; } .price { font-size:13px; } .chip { font-size:13px; } }
+  @media (prefers-reduced-motion:reduce) { .fav-star, .links a { transition:none; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="eyebrow-row">
+    <p class="eyebrow">Stock Board · Gainers · Most Active · Buzz</p>
+    <div class="updated-row"><span id="lastUpdated">Last updated: —</span><button class="refresh-btn" id="refreshBtn" type="button">Refresh</button></div>
+  </div>
+  <h1>Stock Board</h1>
+  <p class="sub">Stocks that are moving, heavily traded and talked about. Each stock gets three scores from 0 to 100: <b>Gainers</b> (price gain, for stocks on the top-gainers list), <b>Most Active</b> (dollars traded, for stocks on the most-active list) and <b>Buzz</b> (Reddit mentions). The <b>All</b> tab only lists stocks that are on <b>at least 2 of the 3 rankings</b> in the time frame, ranked by the average of the three scores. Scores are averaged across every snapshot in the time frame you pick, so a stock that stays on the lists beats one that spiked once. Star a stock to keep it handy. Small and penny stocks are filtered out.</p>
+</header>
+<main>
+  <div class="controls">
+    <div class="tabs sources" id="sources"></div>
+    <div class="timeframes"><div class="tabs" id="tabs"></div></div>
+    <div class="sortbox">
+      <span>Filter</span>
+      <button class="sort-btn" id="favBtn" type="button">★ Favorites</button>
+    </div>
+  </div>
+  <p class="count" id="count"></p>
+  <div class="grid" id="grid"></div>
+  <p class="foot" id="foot"></p>
+</main>
+<script>
+const TABS = [
+  { k: 'all',  l: 'All',         i: 3, short: 'average score (stocks on at least 2 of the 3 rankings)', hint: 'Average of the Gainers, Most Active and Buzz scores, weighted evenly. A stock must be on at least 2 of the 3 rankings' },
+  { k: 'gain', l: 'Gainers',     i: 0, short: 'price gain', hint: 'Price gain since the previous close, for stocks on the top-gainers list (100 = up 50% or more)' },
+  { k: 'act',  l: 'Most Active', i: 1, short: 'dollars traded', hint: 'Dollars traded, for stocks on the most-active list ($1M = 0, $10B = 100)' },
+  { k: 'buzz', l: 'Buzz',        i: 2, short: 'Reddit mentions', hint: 'Reddit mentions in the last 24 hours, relative to the most-mentioned stock' },
+];
+const SESSIONS = { pre: 'Pre-market', reg: 'Market open', post: 'After-hours', closed: 'Market closed' };
+const DIR = (() => { const d = new URLSearchParams(location.search).get('data'); return d && /^[\w-]+$/.test(d) ? d : 'data'; })();
+const $ = id => document.getElementById(id);
+const ESC = { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' };
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ESC[c]);
+const pref = (k, f) => { try { return localStorage.getItem(k) ?? f; } catch { return f; } };
+const setPref = (k, v) => { try { localStorage.setItem(k, String(v)); } catch {} };
+
+let board = null, wins = [], rendered = 0;
+let tab = pref('stocks_tab', 'all'); if (!TABS.some(t => t.k === tab)) tab = 'all';
+let win = parseInt(pref('stocks_win', '60'), 10);
+let favOnly = pref('stocks_favonly', '0') === '1';
+let favs = new Set((() => { try { const a = JSON.parse(pref('stocks_favs', '[]')); return Array.isArray(a) ? a.filter(x => typeof x === 'string') : []; } catch { return []; } })());
+
+const winLabel = m => m < 60 ? `${m} Min` : m % 60 === 0 ? (m === 60 ? '1 Hour' : `${m / 60} Hours`) : `${m} Min`;
+const money = v => v == null ? '—' : v >= 1e9 ? `$${(v / 1e9).toFixed(v >= 1e10 ? 0 : 1)}B` : v >= 1e6 ? `$${(v / 1e6).toFixed(v >= 1e8 ? 0 : 1)}M` : `$${Math.round(v / 1e3)}K`;
+const count = v => v == null ? '—' : v >= 1e4 ? `${(v / 1e3).toFixed(0)}K` : v >= 1e3 ? `${(v / 1e3).toFixed(1)}K` : String(v);
+const sign = v => (v > 0 ? '+' : '') + v.toFixed(2) + '%';
+function ago(iso) {
+  const t = new Date(iso).getTime(); if (!Number.isFinite(t)) return '—';
+  const min = Math.max(0, Math.round((Date.now() - t) / 60000));
+  return min < 60 ? `${min}m ago` : min < 1440 ? `${Math.floor(min / 60)}h ago` : `${Math.floor(min / 1440)}d ago`;
+}
+const etTime = iso => new Date(iso).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' }) + ' ET';
+
+async function getJson(url) {
+  try { const r = await fetch(`${url}?v=${Date.now()}`, { cache: 'no-store' }); return r.ok ? await r.json() : null; } catch { return null; }
+}
+async function loadData() {
+  const d = await getJson(`${DIR}/board.json`);
+  board = d && d.stocks ? d : null;
+  wins = board ? (board.windows || []) : [];
+  if (wins.length && !wins.includes(win)) win = wins.includes(60) ? 60 : wins[0];
+  showStatus();
+}
+function showStatus() {
+  $('lastUpdated').textContent = board && board.asof ? `Latest snapshot: ${etTime(board.asof)} · ${SESSIONS[board.session] || ''} · ${ago(board.asof)}` : 'Last updated: not yet';
+}
+
+function safeUrl(u) { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x : null; } catch { return null; } }
+function logoErr(img) {                       // favicon -> company logo -> ticker letters
+  const next = img.dataset.next;
+  if (next) { img.dataset.next = ''; img.src = next; return; }
+  const d = document.createElement('div'); d.className = 'thumb-fallback'; d.textContent = img.dataset.sym || ''; img.replaceWith(d);
+}
+const whenText = iso => new Date(iso).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' }) + ' ET';
+function agoText(iso) {
+  const t = new Date(iso).getTime(); if (!Number.isFinite(t)) return '';
+  const min = Math.max(0, Math.round((Date.now() - t) / 60000));
+  if (min < 60) return `${min} min ago`;
+  const h = Math.floor(min / 60);
+  return h < 24 ? `${h} h ${min % 60} min ago` : `${Math.floor(h / 24)} d ${h % 24} h ago`;
+}
+
+function cardHtml(sym, st, sc, rank, tabDef, ranks) {
+  const q = encodeURIComponent(sym);
+  const site = st.web ? safeUrl(st.web) : null;
+  const fav = d => `https://www.google.com/s2/favicons?domain=${encodeURIComponent(d)}&sz=128`;
+  const fmpLogo = `https://images.financialmodelingprep.com/symbol/${q}.png`;
+  const imgSrc = site ? fav(site.hostname) : fmpLogo, imgNext = site ? fmpLogo : '';
+  const icon = (href, src, name) => `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="${esc(name)}" aria-label="${esc(name)}"><img src="${esc(src)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.replaceWith(document.createTextNode('${name[0]}'))"><span class="arrow">↗</span></a>`;
+  const links = [icon(`https://finance.yahoo.com/quote/${q}`, fav('finance.yahoo.com'), 'Yahoo Finance')];
+  if (site) links.push(icon(site.href, fav(site.hostname), 'Company website'));
+  links.push(icon(`https://www.tradingview.com/symbols/${encodeURIComponent(sym.replace('-', '.'))}/`, fav('tradingview.com'), 'TradingView'),
+              icon(`https://stocktwits.com/symbol/${q}`, fav('stocktwits.com'), 'StockTwits'),
+              icon(`https://www.reddit.com/search/?q=%24${q}`, fav('reddit.com'), 'Reddit'));
+  const val = sc ? sc[tabDef.i] : null;
+  const f1 = v => v == null ? '—' : Math.round(v);
+  const surge = st.m != null && st.m24 != null ? (st.m24 === 0 ? (st.m > 0 ? 'new' : '') : `${st.m >= st.m24 ? '▲' : '▼'}${Math.abs(Math.round((st.m / st.m24 - 1) * 100))}%`) : '';
+  const of = board.snaps[String(win)] || 0;
+  const rk = n => n ? `#${n}` : '—';
+  const onCount = [0, 1, 2].filter(i => ranks[i].has(sym)).length;
+  return `<article class="card${sc ? '' : ' ghost'}">
+    <div class="thumb-wrap"><img src="${esc(imgSrc)}" data-next="${esc(imgNext)}" data-sym="${esc(sym.slice(0, 4))}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="logoErr(this)">
+      <label class="fav-toggle" title="Favorite"><input type="checkbox" class="fav-input" data-sym="${esc(sym)}" ${favs.has(sym) ? 'checked' : ''}><span class="fav-star">★</span></label>
+      ${rank ? `<div class="rank-pill" title="${esc(tabDef.hint)}">#${rank}</div>` : ''}
+    </div>
+    <div class="body">
+      <div class="ticker-row"><p class="ticker"><a href="https://finance.yahoo.com/quote/${q}" target="_blank" rel="noopener noreferrer" title="Open ${esc(sym)} on Yahoo Finance">${esc(sym)}</a></p><span class="price">${st.p != null ? '$' + st.p.toFixed(2) : '—'}</span></div>
+      <p class="name">${esc(st.n || '')}${st.x ? ` · ${esc(st.x)}` : ''}</p>
+      <div class="chips">
+        <div class="chip" title="Change since the previous close"><small>Chg</small><span class="${st.c > 0 ? 'up' : st.c < 0 ? 'down' : ''}">${st.c == null ? '—' : sign(st.c)}</span></div>
+        <div class="chip" title="Dollars traded today, or rank on the most-active list"><small>Volume</small>${st.dv != null ? money(st.dv) : (st.ar ? '#' + st.ar : '—')}</div>
+        <div class="chip" title="Reddit mentions in the last 24 hours (and the change from the 24 hours before)"><small>Buzz</small>${count(st.m)}${surge ? `<span class="sub2 ${surge[0] === '▲' ? 'up' : surge[0] === '▼' ? 'down' : ''}">${surge}</span>` : ''}</div>
+      </div>
+      ${sc ? `<p class="rk">Rankings (${onCount} of 3): Gainers <b>${rk(ranks[0].get(sym))}</b> · Active <b>${rk(ranks[1].get(sym))}</b> · Buzz <b>${rk(ranks[2].get(sym))}</b></p>
+      <div class="scorebar"><b>${f1(val)}</b><div class="meter"><i style="width:${Math.max(0, Math.min(100, val || 0))}%"></i></div></div>
+      <p class="detail">Gain <b>${f1(sc[0])}</b> · Active <b>${f1(sc[1])}</b> · Buzz <b>${f1(sc[2])}</b> · on the lists in <b>${sc[4]}</b> of ${of} snapshot${of === 1 ? '' : 's'}</p>` : `<p class="detail">Not on the lists in this time frame.</p>`}
+      ${st.t ? `<p class="seen">Last in the data: <b>${esc(whenText(st.t))}</b> · <span class="ago" data-t="${esc(st.t)}">${esc(agoText(st.t))}</span></p>` : ''}
+      <div class="links" style="grid-template-columns:repeat(${links.length},minmax(0,1fr))">${links.join('')}</div>
+    </div>
+  </article>`;
+}
+
+function render() {
+  const tabDef = TABS.find(t => t.k === tab);
+  const grid = $('grid');
+  if (!board || !wins.length) {
+    grid.innerHTML = `<div class="empty">${location.protocol === 'file:' ? 'Browsers block this page from reading its data files when it is opened straight from disk. Open it through GitHub Pages, or run “python -m http.server” in this folder and visit http://localhost:8000.' : 'No data yet. Run the “Update stocks” workflow once (Actions tab). It only collects data while the market session is open, so tick “Run even when the market is closed” to test it.'}</div>`;
+    $('count').textContent = ''; return;
+  }
+  const key = String(win);
+  const all = Object.entries(board.stocks).map(([sym, st]) => ({ sym, st, sc: st.s[key] || null }));
+  let list = all.filter(x => x.sc && x.sc[tabDef.i] != null && x.sc[tabDef.i] > 0)
+    .sort((a, b) => b.sc[tabDef.i] - a.sc[tabDef.i] || (b.sc[3] || 0) - (a.sc[3] || 0) || a.sym.localeCompare(b.sym));
+  list.forEach((x, i) => { x.rank = i + 1; });
+  const ranks = [0, 1, 2].map(i => new Map(all.filter(x => x.sc && (x.sc[i] || 0) > 0).sort((a, b) => b.sc[i] - a.sc[i] || a.sym.localeCompare(b.sym)).map((x, j) => [x.sym, j + 1])));
+  const n = list.length;
+  if (favOnly) {
+    const byRank = new Map(list.map(x => [x.sym, x]));
+    const bySym = new Map(all.map(x => [x.sym, x]));
+    list = [...favs].sort().map(sym => byRank.get(sym) || bySym.get(sym) || { sym, st: {}, sc: null }).filter(x => x.st);
+    list.sort((a, b) => (a.rank || 1e9) - (b.rank || 1e9) || a.sym.localeCompare(b.sym));
+  }
+  const of = board.snaps[key] || 0;
+  $('count').textContent = favOnly
+    ? `${list.length} favorite${list.length === 1 ? '' : 's'} · ${winLabel(win).toLowerCase()} window`
+    : `${n} stock${n === 1 ? '' : 's'} · last ${winLabel(win).toLowerCase()} (${of} snapshot${of === 1 ? '' : 's'}) · ranked by ${tabDef.short}`;
+  grid.innerHTML = list.length ? list.map(x => cardHtml(x.sym, x.st, x.sc, x.rank, tabDef, ranks)).join('')
+    : `<div class="empty">${favOnly ? 'No favorites yet. Star a stock to pin it here.' : 'No stocks match this tab and time frame yet. Try a longer period.'}</div>`;
+  const f = board.filters || {};
+  $('foot').innerHTML = `Prices and movers from <a href="https://site.financialmodelingprep.com/">Financial Modeling Prep</a>; Reddit mention counts from <a href="https://apewisdom.io/">ApeWisdom</a>. Data may be delayed and is for information only, not financial advice. Filters: price at least $${f.min_price ?? 5}, listed on ${esc((f.exchanges || []).join(', '))}, market cap at least ${money(f.min_market_cap)} and dollars traded at least ${money(f.min_dollar_volume)} (when known). Time frames are measured back from the latest snapshot, which is taken every ${board.interval} minutes on business days from the pre-market open to the end of after-hours, so after a weekend or overnight the longer frames hold fewer snapshots.`;
+}
+
+function renderTabs() {
+  $('sources').innerHTML = TABS.map(t => `<button class="tab-btn${t.k === tab ? ' active' : ''}" data-tab="${t.k}" title="${esc(t.hint)}">${t.l}</button>`).join('');
+  $('tabs').innerHTML = wins.map(m => `<button class="tab-btn${m === win ? ' active' : ''}" data-win="${m}">${winLabel(m)}</button>`).join('');
+  $('favBtn').classList.toggle('active', favOnly);
+}
+
+function setup() {
+  $('sources').addEventListener('click', e => {
+    const b = e.target.closest('[data-tab]'); if (!b) return;
+    tab = b.dataset.tab; setPref('stocks_tab', tab); window.scrollTo(0, 0); renderTabs(); render();
+  });
+  $('tabs').addEventListener('click', e => {
+    const b = e.target.closest('[data-win]'); if (!b) return;
+    win = parseInt(b.dataset.win, 10); setPref('stocks_win', win); renderTabs(); render();
+  });
+  $('favBtn').addEventListener('click', () => { favOnly = !favOnly; setPref('stocks_favonly', favOnly ? 1 : 0); renderTabs(); render(); });
+  $('grid').addEventListener('change', e => {
+    const i = e.target.closest('.fav-input'); if (!i) return;
+    i.checked ? favs.add(i.dataset.sym) : favs.delete(i.dataset.sym);
+    setPref('stocks_favs', JSON.stringify([...favs]));
+    if (favOnly) render();
+  });
+  $('refreshBtn').addEventListener('click', async () => {
+    const b = $('refreshBtn'); b.disabled = true; b.textContent = 'Refreshing…';
+    await loadData(); renderTabs(); render(); b.disabled = false; b.textContent = 'Refresh';
+  });
+}
+
+(async function init() {
+  setup(); renderTabs();
+  await loadData(); renderTabs(); render();
+  setInterval(async () => { await loadData(); renderTabs(); render(); }, 5 * 60 * 1000);
+  setInterval(() => { showStatus(); document.querySelectorAll('.ago[data-t]').forEach(e => { e.textContent = agoText(e.dataset.t); }); }, 30000);
+})();
+</script>
+</body>
+</html>
