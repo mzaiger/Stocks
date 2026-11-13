@@ -68,6 +68,20 @@ Notes:
 * Triggers are not exact, but runs are not skipped the way GitHub cron runs can be. Apps Script also keeps its own daily quotas (a consumer account has about 90 minutes of trigger runtime a day; this uses about a second per run).
 * `repository_dispatch` workflows only run from the repo's default branch.
 
+## All the limits per run (15-minute interval)
+
+| Service | Requests per run | Per day (64 runs) | Limit |
+|---|---|---|---|
+| FMP | 2 (gainers, actives) plus up to 4 profile lookups and a few single quotes if the budget allows | 128 plus the optional ones, capped by the script | 250 per day |
+| ApeWisdom | 1 | 64 | none stated |
+| Yahoo quotes | 3 (cookie, crumb, batch quote) plus up to 60 one-by-one lookups only for stocks the batch missed | about 200 to 5,000 | not published; about 2,000 per hour per IP is reported |
+| Yahoo / Google News headlines | 1 or 2 per stock that needs a "why trending" line (at most 25) | a few hundred | none stated |
+| **Gemini** | **At most 1 call, and only if some stock has no line or a 4-hour-old line** | **at most 64, usually 40 to 60** | free tier is reported at about 500 per day and 10 per minute for the flash-lite models; Google shows the real figures in AI Studio |
+| GitHub Actions | 1 run | 64 | unlimited for public repos |
+| Google Apps Script | 1 call | 64 | well inside its quotas |
+
+Gemini only goes over the limit if a model is unavailable: the chain `3.5 -> 3.1 -> 2.5 flash-lite` then makes up to 3 attempts for that run. Each call carries at most `WHY_MAX_PER_RUN` (25) stocks, so a call is about 9,000 input tokens. To cut calls, raise `WHY_TTL_HOURS`; to cut the size of a call, lower `WHY_MAX_PER_RUN`.
+
 ## When it runs
 
 * **Business days only.** The script checks the real Eastern time and the NYSE holiday calendar (New Year's, MLK, Presidents, Good Friday, Memorial, Juneteenth, July 4, Labor, Thanksgiving, Christmas, with the weekend rules). Early-close days are not special-cased.
@@ -89,13 +103,15 @@ Each run uses 3 requests: gainers (1), most actives (1) and one **screener** cal
 
 15 minutes is the fastest interval that fits. The script protects the limit itself: it counts requests per Eastern day in `state/usage.json` and keeps back 3 requests for every run still to come today plus a margin of 20. **Only what is left over is spent on the optional calls**: company profile lookups (up to 4 per run, most important stocks first: on the most rankings, then best rank) and single quotes. At 15 minutes that leaves roughly 35 optional calls a day; websites and market caps are remembered for 30 days, so the cache fills within a few days.
 
-**Where volume and market cap come from.** FMP's free plan blocks the screener and the batch quote (HTTP 402), and its most-active list has no volume. So each run tries these in order and uses the first that works:
+**Where the numbers on a tile come from.** Every stock on the board, including Reddit-only ones, needs price, change, volume and market cap. FMP's free plan blocks the screener and the batch quote (HTTP 402) and its most-active list has no volume, so each run tries these in order and fills in whatever is still missing:
 
 1. FMP screener (1 request, only if your plan has it).
-2. **Yahoo Finance batch quote**, no key and **no FMP request**: one call (plus a cookie and crumb request) returns price, change, volume and market cap for the gainers, most-active and Reddit tickers together. This is an unofficial feed that can change or refuse cloud IPs without notice. If it fails, the script waits 60 minutes (`YAHOO_RETRY_MINUTES`) before asking again.
-3. FMP batch quote, then a few FMP single quotes per run (most important stocks first), within the request budget. Some tiles show "—" for volume and market cap until they are filled in.
+2. **Yahoo Finance batch quote**, no key and no FMP request: all gainers, most-active and Reddit tickers in one call (plus a cookie and a crumb request). It uses `curl_cffi` to look like Chrome, because Yahoo answers 429 to plain Python requests.
+3. **Yahoo chart feed**, one symbol at a time (up to `YAHOO_CHARTS_PER_RUN` = 60), for any stock the batch call missed or if the batch call was refused. It gives price, change and volume.
+4. **Last known values:** a missing price, change or volume is kept from the previous snapshot if that is less than 3 intervals old; a missing market cap comes from the previous snapshot or the profile cache.
+5. **FMP quotes** (a few single calls per run, within the request budget) for whatever is still missing, most important stocks first. A symbol FMP does not know is not asked about again for a day.
 
-With Yahoo working a run costs only 2 FMP requests, so the optional budget grows; raise `PROFILES_PER_RUN` (default 4) to fill in websites faster. Run `python stocks.py check` to see which of these your setup can reach. ApeWisdom is a free public service with no stated limit; one request per run is light.
+Yahoo is an unofficial feed that can change or block cloud IPs without notice; after a refusal the script waits 60 minutes (`YAHOO_RETRY_MINUTES`). A Reddit-only ticker that no source can price is left out, because the filters cannot run on it. Run `python stocks.py check` to see which sources your setup can reach.
 
 ### Changing the interval
 

@@ -32,6 +32,11 @@ import requests
 
 import why
 
+try:
+    from curl_cffi import requests as creq            # impersonates Chrome's TLS fingerprint; Yahoo answers 429 to plain python requests
+except ImportError:                                       # pragma: no cover
+    creq = None
+
 # ---------- settings (all can be overridden with environment variables) ----------
 FMP_KEY = os.environ.get("FMP_Key", "").strip()                         # GitHub secret FMP_Key
 INTERVAL = int(os.environ.get("INTERVAL_MIN", "15"))                    # minutes between runs (must match the cron)
@@ -323,6 +328,15 @@ def fetch_universe(meta, et):
 YAHOO_UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
             "Accept": "application/json,text/plain,*/*", "Accept-Language": "en-US,en;q=0.9"}
 YAHOO_RETRY_MIN = int(os.environ.get("YAHOO_RETRY_MINUTES", "60"))       # after a failure, wait this long before asking Yahoo again
+YAHOO_CHARTS = int(os.environ.get("YAHOO_CHARTS_PER_RUN", "60"))         # one-by-one Yahoo lookups per run for stocks the batch missed
+
+
+def yahoo_session():
+    sess = creq.Session(impersonate="chrome") if creq else requests.Session()
+    if not creq:
+        sess.headers.update(YAHOO_UA)
+    sess.get("https://fc.yahoo.com", timeout=15)                           # sets the cookie (the page itself is a 404)
+    return sess
 
 
 def fetch_yahoo(symbols, meta, now):
@@ -335,9 +349,7 @@ def fetch_yahoo(symbols, meta, now):
         return {}
     out = {}
     try:
-        sess = requests.Session()
-        sess.headers.update(YAHOO_UA)
-        sess.get("https://fc.yahoo.com", timeout=15)                       # sets the cookie (the page itself is a 404)
+        sess = yahoo_session()
         cr = sess.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=15)
         crumb = cr.text.strip()
         if cr.status_code != 200 or not crumb or len(crumb) > 40 or " " in crumb or "<" in crumb:
@@ -355,15 +367,49 @@ def fetch_yahoo(symbols, meta, now):
                             "x": (str(q.get("fullExchangeName") or q.get("exchange") or "").strip() or None),
                             "p": num(q.get("regularMarketPrice")), "c": num(q.get("regularMarketChangePercent")),
                             "v": num(q.get("regularMarketVolume")), "mc": mc if mc and mc > 0 else None}
-    except (requests.RequestException, ValueError, KeyError, TypeError, AttributeError) as e:
+    except Exception as e:                                                    # network, TLS, JSON or shape problems: all mean "not available"
         ym["fail_t"] = iso(now)
-        print(f"  Yahoo quotes not available ({type(e).__name__}: {str(e)[:60] if isinstance(e, ValueError) else ''}); using FMP quotes")
+        print(f"  Yahoo batch quote not available ({type(e).__name__}{': ' + str(e)[:60] if isinstance(e, ValueError) else ''})")
         return {}
     if not out:
         ym["fail_t"] = iso(now)
-        print("  Yahoo quotes returned nothing; using FMP quotes")
+        print("  Yahoo batch quote returned nothing")
         return {}
     ym.pop("fail_t", None)
+    return out
+
+
+def fetch_yahoo_charts(symbols, meta, now):
+    """Price, change and volume one symbol at a time from Yahoo's chart feed (no crumb needed). Used for stocks the batch call missed,
+    mostly Reddit-only tickers. Returns {sym: row}; stops at the first refusal."""
+    if not symbols:
+        return {}
+    cm = meta.setdefault("yahoo_chart", {})
+    if cm.get("fail_t") and (now - parse_iso(cm["fail_t"])).total_seconds() < YAHOO_RETRY_MIN * 60:
+        return {}
+    out = {}
+    try:
+        sess = yahoo_session()
+        for sym in symbols[:YAHOO_CHARTS]:
+            r = sess.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}", params={"range": "1d", "interval": "1d"}, timeout=20)
+            if r.status_code == 404:
+                continue                                                  # Yahoo does not know this symbol
+            if r.status_code != 200:
+                raise ValueError(f"chart HTTP {r.status_code}")
+            res = ((r.json().get("chart") or {}).get("result") or [None])[0]
+            m = (res or {}).get("meta") or {}
+            price, prev = num(m.get("regularMarketPrice")), num(m.get("previousClose") if m.get("previousClose") is not None else m.get("chartPreviousClose"))
+            if price is None:
+                continue
+            out[sym] = {"sym": sym, "n": (str(m.get("longName") or m.get("shortName") or "").strip()[:60] or None),
+                        "x": (str(m.get("fullExchangeName") or m.get("exchangeName") or "").strip() or None), "p": price,
+                        "c": (price / prev - 1) * 100 if prev else None, "v": num(m.get("regularMarketVolume")), "mc": None}
+            time.sleep(0.35)
+    except Exception as e:
+        cm["fail_t"] = iso(now)
+        print(f"  Yahoo chart lookups stopped after {len(out)} ({type(e).__name__}{': ' + str(e)[:60] if isinstance(e, ValueError) else ''})")
+    else:
+        cm.pop("fail_t", None)
     return out
 
 
@@ -399,6 +445,8 @@ def fetch_quotes(symbols, meta, now, et):
         if row:
             out[s] = row
             q[s] = cache_entry(row, now)
+        elif isinstance(data, list):                          # FMP does not know this symbol: do not ask again for a day
+            meta.setdefault("miss", {})[s] = iso(now)
     return out
 
 
@@ -469,13 +517,30 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
     for i, r in enumerate(a_rows or [], 1):
         merge(r, ar=i)
 
-    # volume + market cap for everything from ONE screener call; stocks missing from a complete screener fail the filters
-    uni, complete = fetch_universe(meta, et)
-    ext = {}
-    if not complete:                       # no screener on this plan: Yahoo's batch quote covers the lists and the Reddit tickers
-        ext = fetch_yahoo(list(rows) + [b["sym"] for b in (buzz or []) if b["sym"] not in rows], meta, now)
+    # ---- find the numbers (price, change, volume, market cap) for EVERY stock on the board, Reddit-only ones included ----
+    uni, complete = fetch_universe(meta, et)                      # 1) FMP screener, if the plan allows it
+    all_syms = list(rows) + [b["sym"] for b in (buzz or []) if b["sym"] not in rows]
+    stats = {s: dict(uni[s]) for s in all_syms if s in uni}
+
+    def fill(sym, src, override=()):
+        d = stats.setdefault(sym, {"sym": sym})
+        for k in ("n", "x", "p", "c", "v", "mc"):
+            if src.get(k) is not None and (d.get(k) is None or k in override):
+                d[k] = src[k]
+
+    if not complete:                                              # 2) Yahoo batch quote: every ticker in one request
+        for sym, y in fetch_yahoo(all_syms, meta, now).items():
+            fill(sym, y, override=("p", "c", "v", "mc"))
+
+    def has(sym, k):
+        return (rows.get(sym) or {}).get(k) is not None or (stats.get(sym) or {}).get(k) is not None
+
+    lack = [s for s in all_syms if not (has(s, "p") and has(s, "c") and has(s, "v")) and not (complete and uni and s not in uni)]
+    for sym, y in fetch_yahoo_charts(lack, meta, now).items():    # 3) one by one from Yahoo's chart feed for whatever is still missing
+        fill(sym, y)
+
     for sym, d in rows.items():
-        u = uni.get(sym) or ext.get(sym)
+        u = stats.get(sym)
         if u:
             for k in ("v", "mc"):
                 if u.get(k) is not None:
@@ -483,22 +548,46 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
             for k in ("n", "x", "p", "c"):
                 if d.get(k) is None and u.get(k) is not None:
                     d[k] = u[k]
-    if complete and any(sym in uni for sym in rows):
+    if complete and any(sym in uni for sym in rows):              # a complete screener answer defines which stocks pass the size limits
         for sym in [sym for sym in rows if sym not in uni]:
             del rows[sym]
 
-    # Reddit tickers the lists do not cover: from the screener if possible, otherwise from quotes
+    # last known values come from the previous snapshot and the profile cache
+    files = snap_files()
+    prev = read(files[-1], None) if files else None
+    prow = prev["rows"] if prev else {}
+    recent = bool(prev) and (now - parse_iso(prev["t"])).total_seconds() <= 3 * INTERVAL * 60
+    prof = read(STATE / "profiles.json", {})
+
+    # Reddit-only tickers: they join the board once their numbers are known
+    miss = meta.setdefault("miss", {})
     pending = []
     for b in buzz or []:
-        if b["sym"] in rows:
+        sym = b["sym"]
+        if sym in rows:
             continue
-        if b["sym"] in uni:
-            merge(uni[b["sym"]])
-        elif b["sym"] in ext:
-            merge(ext[b["sym"]])
-        elif not (uni and complete) and not ext:
-            pending.append(b["sym"])
+        if (stats.get(sym) or {}).get("p") is not None:
+            merge(stats[sym])
+        elif recent and (prow.get(sym) or {}).get("p") is not None:     # no fresh numbers this time: keep the last known ones
+            merge({"sym": sym, **{k: prow[sym].get(k) for k in ("n", "x", "p", "c", "v", "mc")}})
+        elif not (uni and complete) and not (miss.get(sym) and (now - parse_iso(miss[sym])).total_seconds() < 86400):
+            pending.append(sym)
     pending = pending[:BUZZ_LOOKUP]
+
+    # 4) last known values: a missing number is carried over from the previous snapshot (price, change and volume only if it is
+    #    recent) or from the profile cache (market cap changes slowly, so an older value will do)
+    for sym, d in rows.items():
+        old = prow.get(sym) or {}
+        if recent:
+            for k in ("p", "c", "v"):
+                if d.get(k) is None and old.get(k) is not None:
+                    d[k] = old[k]
+        if d.get("mc") is None:
+            mc = old.get("mc") or (prof.get(sym) or {}).get("mc")
+            if mc:
+                d["mc"] = mc
+
+    # 5) FMP quotes (a few single calls, within the request budget) for what is still missing
     need = [sym for sym in sorted(rows, key=importance_key(rows)) if rows[sym].get("v") is None or rows[sym].get("mc") is None]
     fresh = fetch_quotes(need + [sym for sym in pending if sym not in need], meta, now, et) if (need or pending) else {}
     for sym, qr in fresh.items():
@@ -728,6 +817,9 @@ def run():
         q = meta.get("q", {})
         for s in [s for s, e in q.items() if parse_iso(e["t"]) < cutoff]:
             del q[s]
+        miss = meta.get("miss", {})
+        for s in [s for s, t in miss.items() if parse_iso(t) < now - timedelta(days=2)]:
+            del miss[s]
         write(STATE / "meta.json", meta)
     finally:
         save_usage()
@@ -756,6 +848,9 @@ def check():
             print(f"  {name}: HTTP {st}, {str(data)[:150] if data is not None else 'no data'}")
     y = fetch_yahoo(["AAPL", "MSFT"], {}, datetime.now(timezone.utc))
     print("  Yahoo batch quote: " + (f"{len(y)} rows, AAPL volume {y.get('AAPL', {}).get('v')}, market cap {y.get('AAPL', {}).get('mc')}" if y else "not available from here"))
+    yc = fetch_yahoo_charts(["AAPL"], {}, datetime.now(timezone.utc))
+    print(f"  Yahoo chart feed: " + (f"AAPL price {yc['AAPL']['p']}, change {yc['AAPL']['c']:.2f}%, volume {yc['AAPL']['v']}" if yc else "not available from here")
+          + f"  (Chrome impersonation via curl_cffi: {'on' if creq else 'OFF - pip install curl_cffi'})")
     items = why.headlines("AAPL", "Apple", datetime.now(timezone.utc))
     print(f"  headlines (Yahoo/Google News RSS): {len(items)} found" + (f", newest: {items[0][0][:70]}" if items else ""))
     print("  GEMINI_KEY: " + ("set" if os.environ.get("GEMINI_KEY", "").strip() else "NOT set (no 'why trending' lines)"))
