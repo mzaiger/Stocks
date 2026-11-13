@@ -51,21 +51,21 @@ GitHub's cron schedule is not used. `apps-script/Code.gs` sends a `repository_di
 
 | Function | What it does |
 |---|---|
-| `triggerStocksWorkflow` | Sends `trigger-stocks-pull` to the repo, but only Monday to Friday, 4:00 AM to 8:00 PM Eastern (checked in Eastern time, so daylight saving is handled) |
-| `installStocksTrigger` | Run once: creates the time-driven trigger (every 15 minutes) and removes any older stock trigger |
-| `testStocksDispatch` | Sends the event even when the market is closed (the workflow gets `force = true`), to test the whole chain |
+| `triggerStocks` | The function your **15-minute trigger runs**. It sends `trigger-stocks-pull` to the repo, but only Monday to Friday, 4:00 AM to 8:00 PM Eastern (checked in Eastern time, so daylight saving is handled) |
+| `testStocks` | Run by hand once: sends the event even when the market is closed (the workflow gets `force = true`) |
+| `sendStocksDispatch_` | Helper that calls the GitHub API. Never run it directly |
 
 Setup:
 
-1. At [script.google.com](https://script.google.com/home/) open the project you use for SlickDealsTracker (or make a new one) and paste in `apps-script/Code.gs`. Check the `STOCKS_REPO` line at the top (`mzaiger/Stocks`) matches the repo's real name.
+1. At [script.google.com](https://script.google.com/home/) open the project you use for the timers and paste in `apps-script/Code.gs`, **at the top level of the file** (not inside another function). Check the `STOCKS_REPO` line (`mzaiger/Stocks`) matches the repo's real name, and save.
 2. **Project Settings > Script Properties**: the `GITHUB_TOKEN` property. If it is the token you already use for SlickDealsTracker and it has the `repo` scope, it works for this repo too and you add nothing. A new fine-grained token needs access to this repo with **Contents: Read and write**.
-3. Run `testStocksDispatch` once from the editor and approve the permissions. In the execution log you want "Stocks workflow dispatched." (HTTP 204), and a run should appear under the repo's Actions tab. HTTP 401 or 403 means the token; 404 means the repo name or the token's access to it.
-4. Run `installStocksTrigger` once. Check **Triggers** (clock icon): one time-driven trigger, every 15 minutes.
+3. Choose `testStocks` in the function dropdown and click Run; approve the permissions. In **Executions** you want "Stocks workflow dispatched." (HTTP 204), and an "Update stocks" run should appear under the repo's Actions tab. HTTP 401 or 403 means the token; 404 means the repo name or the token's access to it.
+4. On the **Triggers** page (clock icon) make sure there is **one** time-driven trigger, every 15 minutes, that runs `triggerStocks`. If you already have a 15-minute trigger, change its function to `triggerStocks` instead of adding a second one.
 
 Notes:
 * Apps Script fires "every 15 minutes" at slightly irregular moments, and the snapshot windows allow for that. `stocks.py` also skips any run that comes less than 40% of an interval after the previous one, so a double trigger or an extra manual run cannot burn the FMP limit.
 * Market holidays are checked by `stocks.py`, not the Apps Script (about 9 wasted starts a year that exit immediately).
-* Triggers are not exact, but runs are not skipped the way GitHub cron runs can be. Apps Script also keeps its own daily quotas (a consumer account has about 90 minutes of trigger runtime a day; this uses about a second per run).
+* The Calendar permission some people see in the prompt does not come from this file; the permission prompt covers everything in the project. This file only uses an external request (to GitHub) and the script property.
 * `repository_dispatch` workflows only run from the repo's default branch.
 
 ## All the limits per run (15-minute interval)
@@ -88,7 +88,7 @@ Gemini only goes over the limit if a model is unavailable: the chain `3.5 -> 3.1
 * **4:00 AM to 8:00 PM Eastern**: pre-market (4:00 to 9:30), regular (9:30 to 4:00), after-hours (4:00 to 8:00). Each snapshot is labelled with its session. Change the window with `SESSION_START` / `SESSION_END` if you want regular hours only.
 * **Daylight saving:** both the Apps Script and `stocks.py` check the real Eastern time, so EST and EDT both work; a run outside the session exits immediately without calling any API.
 * If a trigger is ever late or missed, a window just holds one fewer snapshot.
-* **Extended hours caveat:** FMP's documentation describes the gainers and most-active lists as updating during regular trading hours. If the lists do not change before 9:30 or after 4:00, the script sees identical prices and buzz and saves nothing, so you do not get duplicate snapshots (it still spends its requests). If that happens every day, set `SESSION_START=09:30` and `SESSION_END=16:00` in the workflow `env` to stop spending requests on it.
+* **Extended hours:** FMP's gainers and most-active lists are described as updating during regular hours, so before 9:30 and after 4:00 they may not move. The price and change on a tile come from Yahoo's quote, which has pre-market and after-hours fields: during the pre-market session the tile shows the **pre-market price and change** (tagged **Pre**), and in after-hours the **after-hours price** (tagged **AH**), with the change always measured **since the previous close** (the after-hours change adds the after-hours move to the day's change). A stock with no extended-hours trade yet shows its regular price with no tag. This needs the Yahoo quote to work; the chart-feed and FMP fallbacks only have regular-session prices. **Volume stays the regular-session volume** (Yahoo's free feed has no reliable pre-market volume), so in the morning it is the previous day's total. If the lists and quotes are all unchanged the script saves nothing; to stop spending requests outside regular hours, set `SESSION_START=09:30` and `SESSION_END=16:00` in the workflow `env`.
 
 ## Rate limits (FMP free: 250 requests per day)
 
@@ -115,13 +115,13 @@ Yahoo is an unofficial feed that can change or block cloud IPs without notice; a
 
 ### Changing the interval
 
-Change `INTERVAL_MIN` in the workflow **and** `STOCKS_INTERVAL_MINUTES` in `Code.gs` to the same value, then run `installStocksTrigger` again. The page builds its time frame buttons from the interval:
+Change `INTERVAL_MIN` in the workflow **and** the trigger's interval on the Apps Script Triggers page to the same value. The page builds its time frame buttons from the interval:
 
 | Interval | Time frames | Apps Script trigger |
 |---|---|---|
-| 15 | 15 min, 30 min, 1 h, 4 h, 12 h, 24 h | `everyMinutes(15)` |
-| 30 | 30 min, 1 h, 4 h, 12 h, 24 h | `everyMinutes(30)` |
-| 60 | 1 h, 2 h, 4 h, 12 h, 24 h | `everyHours(1)` (replace `.everyMinutes(...)` in `installStocksTrigger`) |
+| 15 | 15 min, 30 min, 1 h, 4 h, 12 h, 24 h | every 15 minutes |
+| 30 | 30 min, 1 h, 4 h, 12 h, 24 h | every 30 minutes |
+| 60 | 1 h, 2 h, 4 h, 12 h, 24 h | every hour |
 
 ## Scores
 

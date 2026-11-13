@@ -54,7 +54,8 @@
   .ticker a { color:inherit; text-decoration:none; border-bottom:2px solid transparent; }
   .ticker a:hover { color:var(--blue); border-bottom-color:var(--blue); }
   .ticker a:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
-  .price { font-family:'IBM Plex Mono',monospace; font-size:15px; font-weight:600; }
+  .price { font-family:'IBM Plex Mono',monospace; font-size:15px; font-weight:600; white-space:nowrap; }
+  .price .tag { display:inline-block; margin-right:5px; padding:1px 5px; border-radius:5px; border:1px solid var(--line); background:var(--panel); font-size:10.5px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:var(--blue); vertical-align:2px; }
   .name { font-size:12.5px; line-height:1.3; color:var(--text-dim); margin:0 0 8px; overflow-wrap:anywhere; min-height:1.3em; }
   .chips { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; width:100%; margin:0; }
   .chip { background:var(--panel); border:1px solid var(--line); border-radius:7px; padding:8px 2px; min-width:0; width:100%; text-align:center; font-family:'IBM Plex Mono',monospace; font-size:14.5px; font-weight:600; }
@@ -182,11 +183,11 @@ function cardHtml(sym, st, sc, rank, tabDef, ranks) {
       ${rank ? `<div class="rank-pill" title="${esc(tabDef.hint)}">#${rank}</div>` : ''}
     </div>
     <div class="body">
-      <div class="ticker-row"><p class="ticker"><a href="https://finance.yahoo.com/quote/${q}" target="_blank" rel="noopener noreferrer" title="Open ${esc(sym)} on Yahoo Finance">${esc(sym)}</a></p><span class="price">${st.p != null ? '$' + st.p.toFixed(2) : '—'}</span></div>
+      <div class="ticker-row"><p class="ticker"><a href="https://finance.yahoo.com/quote/${q}" target="_blank" rel="noopener noreferrer" title="Open ${esc(sym)} on Yahoo Finance">${esc(sym)}</a></p><span class="price">${st.ext ? `<span class="tag" title="${st.ext === 'pre' ? 'Pre-market price' : 'After-hours price'}">${st.ext === 'pre' ? 'Pre' : 'AH'}</span>` : ''}${st.p != null ? '$' + st.p.toFixed(2) : '—'}</span></div>
       <p class="name" title="${st.x ? esc(st.x) : ''}">${esc(st.n || '')}${st.mc ? ` · ${money(st.mc)}` : ''}</p>
       ${st.why ? `<p class="why" title="${st.why_t ? 'Written ' + esc(agoText(st.why_t)) : ''}">${esc(st.why)}</p>` : ''}
       <div class="chips">
-        <div class="chip" title="Change since the previous close"><small>Chg</small><span class="val ${st.c > 0 ? 'up' : st.c < 0 ? 'down' : ''}">${st.c == null ? '—' : sign(st.c)}</span>${rk(0, 'Gainers')}</div>
+        <div class="chip" title="Change since the previous close${st.ext === 'pre' ? ' (pre-market price)' : st.ext === 'post' ? ' (after-hours price)' : ''}"><small>Chg</small><span class="val ${st.c > 0 ? 'up' : st.c < 0 ? 'down' : ''}">${st.c == null ? '—' : sign(st.c)}</span>${rk(0, 'Gainers')}</div>
         <div class="chip" title="Shares traded today"><small>Volume</small><span class="val">${shares(st.v)}</span>${rk(1, 'Most Active')}</div>
         <div class="chip" title="Reddit mentions in the last 24 hours, and the change from the 24 hours before"><small>Buzz</small><span class="val">${count(st.m)}${surge ? `<span class="pct ${surge[0] === '▲' ? 'up' : surge[0] === '▼' ? 'down' : ''}">${surge}</span>` : ''}</span>${rk(2, 'Buzz')}</div>
       </div>

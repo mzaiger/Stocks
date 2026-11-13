@@ -363,10 +363,18 @@ def fetch_yahoo(symbols, meta, now):
                 if not sym:
                     continue
                 mc = num(q.get("marketCap"))
+                price, chg, ext = num(q.get("regularMarketPrice")), num(q.get("regularMarketChangePercent")), None
+                state = str(q.get("marketState") or "").upper()
+                pre, post = num(q.get("preMarketPrice")), num(q.get("postMarketPrice"))
+                if state == "PRE" and pre:                                    # pre-market: change is against the previous close
+                    price, chg, ext = pre, num(q.get("preMarketChangePercent")), "pre"
+                elif state in ("POST", "POSTPOST") and post:                  # after-hours: change against the close BEFORE today, so it stays "since the previous close"
+                    prev = num(q.get("regularMarketPreviousClose"))
+                    price, ext = post, "post"
+                    chg = (post / prev - 1) * 100 if prev else (chg or 0) + (num(q.get("postMarketChangePercent")) or 0)
                 out[sym] = {"sym": sym, "n": (str(q.get("longName") or q.get("shortName") or "").strip()[:60] or None),
                             "x": (str(q.get("fullExchangeName") or q.get("exchange") or "").strip() or None),
-                            "p": num(q.get("regularMarketPrice")), "c": num(q.get("regularMarketChangePercent")),
-                            "v": num(q.get("regularMarketVolume")), "mc": mc if mc and mc > 0 else None}
+                            "p": price, "c": chg, "v": num(q.get("regularMarketVolume")), "mc": mc if mc and mc > 0 else None, "ext": ext}
     except Exception as e:                                                    # network, TLS, JSON or shape problems: all mean "not available"
         ym["fail_t"] = iso(now)
         print(f"  Yahoo batch quote not available ({type(e).__name__}{': ' + str(e)[:60] if isinstance(e, ValueError) else ''})")
@@ -510,6 +518,8 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
         for k in ("n", "x", "p", "c", "v", "mc"):
             if r.get(k) is not None:
                 d[k] = r[k]
+        if r.get("ext"):
+            d["ext"] = r["ext"]
         d.update(extra)
 
     for i, r in enumerate(g_rows or [], 1):
@@ -524,13 +534,13 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
 
     def fill(sym, src, override=()):
         d = stats.setdefault(sym, {"sym": sym})
-        for k in ("n", "x", "p", "c", "v", "mc"):
+        for k in ("n", "x", "p", "c", "v", "mc", "ext"):
             if src.get(k) is not None and (d.get(k) is None or k in override):
                 d[k] = src[k]
 
     if not complete:                                              # 2) Yahoo batch quote: every ticker in one request
         for sym, y in fetch_yahoo(all_syms, meta, now).items():
-            fill(sym, y, override=("p", "c", "v", "mc"))
+            fill(sym, y, override=("p", "c", "v", "mc", "ext"))
 
     def has(sym, k):
         return (rows.get(sym) or {}).get(k) is not None or (stats.get(sym) or {}).get(k) is not None
@@ -542,6 +552,10 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
     for sym, d in rows.items():
         u = stats.get(sym)
         if u:
+            if u.get("ext") and u.get("p") is not None:               # pre-market / after-hours price replaces the (regular-hours) list price
+                d["p"], d["ext"] = u["p"], u["ext"]
+                if u.get("c") is not None:
+                    d["c"] = u["c"]
             for k in ("v", "mc"):
                 if u.get(k) is not None:
                     d[k] = u[k]
@@ -569,7 +583,7 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
         if (stats.get(sym) or {}).get("p") is not None:
             merge(stats[sym])
         elif recent and (prow.get(sym) or {}).get("p") is not None:     # no fresh numbers this time: keep the last known ones
-            merge({"sym": sym, **{k: prow[sym].get(k) for k in ("n", "x", "p", "c", "v", "mc")}})
+            merge({"sym": sym, **{k: prow[sym].get(k) for k in ("n", "x", "p", "c", "v", "mc", "ext")}})
         elif not (uni and complete) and not (miss.get(sym) and (now - parse_iso(miss[sym])).total_seconds() < 86400):
             pending.append(sym)
     pending = pending[:BUZZ_LOOKUP]
@@ -579,6 +593,8 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
     for sym, d in rows.items():
         old = prow.get(sym) or {}
         if recent:
+            if d.get("p") is None and old.get("p") is not None and old.get("ext"):
+                d["ext"] = old["ext"]
             for k in ("p", "c", "v"):
                 if d.get(k) is None and old.get(k) is not None:
                     d[k] = old[k]
@@ -755,7 +771,7 @@ def build_board():
         t, r = last_seen[sym]
         pf = profiles.get(sym) or {}
         wy = why_cache.get(sym) or {}
-        st = {"n": r.get("n"), "x": r.get("x"), "p": r.get("p"), "c": r.get("c"), "v": r.get("v"), "mc": r.get("mc") or pf.get("mc"),
+        st = {"n": r.get("n"), "x": r.get("x"), "p": r.get("p"), "c": r.get("c"), "ext": r.get("ext"), "v": r.get("v"), "mc": r.get("mc") or pf.get("mc"),
               "m": r.get("m"), "m24": r.get("m24"), "since": iso(trending_since(appear[sym])), "web": pf.get("w"),
               "why": wy.get("d"), "why_t": wy.get("t") if wy.get("d") else None, "s": per}
         board["stocks"][sym] = {k: v for k, v in st.items() if v is not None}
@@ -847,7 +863,7 @@ def check():
         else:
             print(f"  {name}: HTTP {st}, {str(data)[:150] if data is not None else 'no data'}")
     y = fetch_yahoo(["AAPL", "MSFT"], {}, datetime.now(timezone.utc))
-    print("  Yahoo batch quote: " + (f"{len(y)} rows, AAPL volume {y.get('AAPL', {}).get('v')}, market cap {y.get('AAPL', {}).get('mc')}" if y else "not available from here"))
+    print("  Yahoo batch quote: " + (f"{len(y)} rows, AAPL price {y.get('AAPL', {}).get('p')} ({ {'pre': 'pre-market', 'post': 'after-hours'}.get(y.get('AAPL', {}).get('ext'), 'regular session') }), volume {y.get('AAPL', {}).get('v')}, market cap {y.get('AAPL', {}).get('mc')}" if y else "not available from here"))
     yc = fetch_yahoo_charts(["AAPL"], {}, datetime.now(timezone.utc))
     print(f"  Yahoo chart feed: " + (f"AAPL price {yc['AAPL']['p']}, change {yc['AAPL']['c']:.2f}%, volume {yc['AAPL']['v']}" if yc else "not available from here")
           + f"  (Chrome impersonation via curl_cffi: {'on' if creq else 'OFF - pip install curl_cffi'})")
@@ -897,7 +913,8 @@ def demo():
             v["p"] = max(1.0, v["p"] * (1 + rnd.gauss(v["drift"] / 100, 0.25 * v["w"] / 10)))
             vol[s] += rnd.random() * 2.2e6 * v["w"] * (3 if session_of(et) == "reg" else 1)
             v["heat"] = max(5, v["heat"] * rnd.uniform(0.85, 1.2))
-        info = {s: {"n": names[s], "x": st[s]["x"], "mc": int(st[s]["cap"]), "p": round(st[s]["p"], 2), "c": round((st[s]["p"] / prev_close[s] - 1) * 100, 2), "v": int(vol[s])} for s in st}
+        ext_tag = session_of(et) if session_of(et) in ("pre", "post") else None
+        info = {s: {"n": names[s], "x": st[s]["x"], "mc": int(st[s]["cap"]), **({"ext": ext_tag} if ext_tag else {}), "p": round(st[s]["p"], 2), "c": round((st[s]["p"] / prev_close[s] - 1) * 100, 2), "v": int(vol[s])} for s in st}
         gain = sorted(info, key=lambda s: -info[s]["c"])[:25]
         act = sorted(info, key=lambda s: -info[s]["p"] * info[s]["v"])[:25]
         buzz = sorted(st, key=lambda s: -st[s]["heat"])[:40]
