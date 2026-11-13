@@ -62,6 +62,8 @@
   .chip small { display:block; font-size:11px; font-weight:500; color:var(--text-dim); letter-spacing:.06em; text-transform:uppercase; margin-bottom:2px; }
   .chip .val { display:flex; flex-wrap:wrap; justify-content:center; align-items:baseline; gap:0 5px; line-height:1.25; }
   .chip .pct { font-size:11.5px; font-weight:600; }
+  .chip .extchg { display:block; font-size:11px; font-weight:600; margin-top:2px; white-space:nowrap; }
+  .chip .extchg i { font-style:normal; font-weight:500; color:var(--text-dim); margin-right:3px; }
   .chip .rk { display:block; font-size:11px; font-weight:500; color:var(--text-dim); margin-top:3px; padding-top:3px; border-top:1px solid var(--line); }
   .why { font-size:12.5px; line-height:1.4; color:var(--text); margin:0 0 10px; }
   .when { font-family:'IBM Plex Mono',monospace; font-size:11.5px; font-weight:400; color:var(--text-dim); margin:8px 0 0; }
@@ -176,6 +178,8 @@ function cardHtml(sym, st, sc, rank, tabDef, ranks) {
              icon(`https://stocktwits.com/symbol/${q}`, fav('stocktwits.com'), 'StockTwits'),
              icon(`https://www.reddit.com/search/?q=%24${q}`, fav('reddit.com'), 'Reddit'));
   const surge = st.m != null && st.m24 != null ? (st.m24 === 0 ? (st.m > 0 ? 'new' : '') : `${st.m >= st.m24 ? '▲' : '▼'}${Math.abs(Math.round((st.m / st.m24 - 1) * 100))}%`) : '';
+  const reg = st.rc != null ? st.rc : st.c;
+  const extLine = st.ext && st.ec != null ? `<span class="extchg ${st.ec > 0 ? 'up' : st.ec < 0 ? 'down' : ''}" title="${st.ext === 'pre' ? 'Pre-market change, against the previous close' : 'After-hours change, against today\'s close'}"><i>${st.ext === 'pre' ? 'Pre' : 'AH'}</i>${sign(st.ec)}</span>` : '';
   const rk = (i, what) => `<span class="rk" title="Rank on the ${what} tab in this time frame">${ranks[i].get(sym) ? '#' + ranks[i].get(sym) : '—'}</span>`;
   return `<article class="card${sc ? '' : ' ghost'}">
     <div class="thumb-wrap"><img src="${esc(imgSrc)}" data-next="${esc(imgNext)}" data-sym="${esc(sym.slice(0, 4))}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="logoErr(this)">
@@ -187,7 +191,7 @@ function cardHtml(sym, st, sc, rank, tabDef, ranks) {
       <p class="name" title="${st.x ? esc(st.x) : ''}">${esc(st.n || '')}${st.mc ? ` · ${money(st.mc)}` : ''}</p>
       ${st.why ? `<p class="why" title="${st.why_t ? 'Written ' + esc(agoText(st.why_t)) : ''}">${esc(st.why)}</p>` : ''}
       <div class="chips">
-        <div class="chip" title="Change since the previous close${st.ext === 'pre' ? ' (pre-market price)' : st.ext === 'post' ? ' (after-hours price)' : ''}"><small>Chg</small><span class="val ${st.c > 0 ? 'up' : st.c < 0 ? 'down' : ''}">${st.c == null ? '—' : sign(st.c)}</span>${rk(0, 'Gainers')}</div>
+        <div class="chip" title="${st.ext ? `Regular-session change${st.ext === 'pre' ? ' (the last full session, until the open)' : ''}. The ${st.ext === 'pre' ? 'pre-market' : 'after-hours'} change is the line below it` : 'Change since the previous close'}"><small>Chg</small><span class="val ${reg > 0 ? 'up' : reg < 0 ? 'down' : ''}">${reg == null ? '—' : sign(reg)}</span>${extLine}${rk(0, 'Gainers')}</div>
         <div class="chip" title="Shares traded today"><small>Volume</small><span class="val">${shares(st.v)}</span>${rk(1, 'Most Active')}</div>
         <div class="chip" title="Reddit mentions in the last 24 hours, and the change from the 24 hours before"><small>Buzz</small><span class="val">${count(st.m)}${surge ? `<span class="pct ${surge[0] === '▲' ? 'up' : surge[0] === '▼' ? 'down' : ''}">${surge}</span>` : ''}</span>${rk(2, 'Buzz')}</div>
       </div>

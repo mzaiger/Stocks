@@ -364,17 +364,20 @@ def fetch_yahoo(symbols, meta, now):
                     continue
                 mc = num(q.get("marketCap"))
                 price, chg, ext = num(q.get("regularMarketPrice")), num(q.get("regularMarketChangePercent")), None
+                rc, ec = chg, None                                              # rc = regular-session change, ec = pre-market / after-hours change (as Yahoo shows them)
                 state = str(q.get("marketState") or "").upper()
                 pre, post = num(q.get("preMarketPrice")), num(q.get("postMarketPrice"))
                 if state == "PRE" and pre:                                    # pre-market: change is against the previous close
                     price, chg, ext = pre, num(q.get("preMarketChangePercent")), "pre"
+                    ec = chg
                 elif state in ("POST", "POSTPOST") and post:                  # after-hours: change against the close BEFORE today, so it stays "since the previous close"
                     prev = num(q.get("regularMarketPreviousClose"))
                     price, ext = post, "post"
-                    chg = (post / prev - 1) * 100 if prev else (chg or 0) + (num(q.get("postMarketChangePercent")) or 0)
+                    ec = num(q.get("postMarketChangePercent"))
+                    chg = (post / prev - 1) * 100 if prev else (chg or 0) + (ec or 0)
                 out[sym] = {"sym": sym, "n": (str(q.get("longName") or q.get("shortName") or "").strip()[:60] or None),
                             "x": (str(q.get("fullExchangeName") or q.get("exchange") or "").strip() or None),
-                            "p": price, "c": chg, "v": num(q.get("regularMarketVolume")), "mc": mc if mc and mc > 0 else None, "ext": ext}
+                            "p": price, "c": chg, "v": num(q.get("regularMarketVolume")), "mc": mc if mc and mc > 0 else None, "ext": ext, "rc": rc, "ec": ec}
     except Exception as e:                                                    # network, TLS, JSON or shape problems: all mean "not available"
         ym["fail_t"] = iso(now)
         print(f"  Yahoo batch quote not available ({type(e).__name__}{': ' + str(e)[:60] if isinstance(e, ValueError) else ''})")
@@ -515,7 +518,7 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
 
     def merge(r, **extra):
         d = rows.setdefault(r["sym"], {})
-        for k in ("n", "x", "p", "c", "v", "mc"):
+        for k in ("n", "x", "p", "c", "v", "mc", "rc", "ec"):
             if r.get(k) is not None:
                 d[k] = r[k]
         if r.get("ext"):
@@ -534,13 +537,13 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
 
     def fill(sym, src, override=()):
         d = stats.setdefault(sym, {"sym": sym})
-        for k in ("n", "x", "p", "c", "v", "mc", "ext"):
+        for k in ("n", "x", "p", "c", "v", "mc", "ext", "rc", "ec"):
             if src.get(k) is not None and (d.get(k) is None or k in override):
                 d[k] = src[k]
 
     if not complete:                                              # 2) Yahoo batch quote: every ticker in one request
         for sym, y in fetch_yahoo(all_syms, meta, now).items():
-            fill(sym, y, override=("p", "c", "v", "mc", "ext"))
+            fill(sym, y, override=("p", "c", "v", "mc", "ext", "rc", "ec"))
 
     def has(sym, k):
         return (rows.get(sym) or {}).get(k) is not None or (stats.get(sym) or {}).get(k) is not None
@@ -554,8 +557,9 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
         if u:
             if u.get("ext") and u.get("p") is not None:               # pre-market / after-hours price replaces the (regular-hours) list price
                 d["p"], d["ext"] = u["p"], u["ext"]
-                if u.get("c") is not None:
-                    d["c"] = u["c"]
+                for k in ("c", "rc", "ec"):
+                    if u.get(k) is not None:
+                        d[k] = u[k]
             for k in ("v", "mc"):
                 if u.get(k) is not None:
                     d[k] = u[k]
@@ -583,7 +587,7 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
         if (stats.get(sym) or {}).get("p") is not None:
             merge(stats[sym])
         elif recent and (prow.get(sym) or {}).get("p") is not None:     # no fresh numbers this time: keep the last known ones
-            merge({"sym": sym, **{k: prow[sym].get(k) for k in ("n", "x", "p", "c", "v", "mc", "ext")}})
+            merge({"sym": sym, **{k: prow[sym].get(k) for k in ("n", "x", "p", "c", "v", "mc", "ext", "rc", "ec")}})
         elif not (uni and complete) and not (miss.get(sym) and (now - parse_iso(miss[sym])).total_seconds() < 86400):
             pending.append(sym)
     pending = pending[:BUZZ_LOOKUP]
@@ -595,6 +599,9 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
         if recent:
             if d.get("p") is None and old.get("p") is not None and old.get("ext"):
                 d["ext"] = old["ext"]
+                for k in ("rc", "ec"):
+                    if d.get(k) is None and old.get(k) is not None:
+                        d[k] = old[k]
             for k in ("p", "c", "v"):
                 if d.get(k) is None and old.get(k) is not None:
                     d[k] = old[k]
@@ -634,8 +641,10 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
         for i, s in enumerate(order, 1):
             kept[s][key] = i
     for d in kept.values():
-        for k in ("p", "c"):
-            if k in d:
+        if d.get("rc") is None and d.get("c") is not None and not d.get("ext"):
+            d["rc"] = d["c"]                                         # in the regular session the regular change IS the change
+        for k in ("p", "c", "rc", "ec"):
+            if d.get(k) is not None:
                 d[k] = round(d[k], 4)
         for k in ("v", "mc"):
             if k in d:
@@ -771,7 +780,7 @@ def build_board():
         t, r = last_seen[sym]
         pf = profiles.get(sym) or {}
         wy = why_cache.get(sym) or {}
-        st = {"n": r.get("n"), "x": r.get("x"), "p": r.get("p"), "c": r.get("c"), "ext": r.get("ext"), "v": r.get("v"), "mc": r.get("mc") or pf.get("mc"),
+        st = {"n": r.get("n"), "x": r.get("x"), "p": r.get("p"), "c": r.get("c"), "rc": r.get("rc"), "ec": r.get("ec"), "ext": r.get("ext"), "v": r.get("v"), "mc": r.get("mc") or pf.get("mc"),
               "m": r.get("m"), "m24": r.get("m24"), "since": iso(trending_since(appear[sym])), "web": pf.get("w"),
               "why": wy.get("d"), "why_t": wy.get("t") if wy.get("d") else None, "s": per}
         board["stocks"][sym] = {k: v for k, v in st.items() if v is not None}
@@ -914,7 +923,11 @@ def demo():
             vol[s] += rnd.random() * 2.2e6 * v["w"] * (3 if session_of(et) == "reg" else 1)
             v["heat"] = max(5, v["heat"] * rnd.uniform(0.85, 1.2))
         ext_tag = session_of(et) if session_of(et) in ("pre", "post") else None
-        info = {s: {"n": names[s], "x": st[s]["x"], "mc": int(st[s]["cap"]), **({"ext": ext_tag} if ext_tag else {}), "p": round(st[s]["p"], 2), "c": round((st[s]["p"] / prev_close[s] - 1) * 100, 2), "v": int(vol[s])} for s in st}
+        info = {s: {"n": names[s], "x": st[s]["x"], "mc": int(st[s]["cap"]), **({"ext": ext_tag, "ec": 0.0} if ext_tag else {}), "p": round(st[s]["p"], 2), "c": round((st[s]["p"] / prev_close[s] - 1) * 100, 2), "v": int(vol[s])} for s in st}
+        if ext_tag:                                          # demo: split the change into a regular-session part and an extended-hours part
+            for s_ in info:
+                info[s_]["rc"] = round(info[s_]["c"] * 0.6, 2)
+                info[s_]["ec"] = round(info[s_]["c"] * 0.4, 2)
         gain = sorted(info, key=lambda s: -info[s]["c"])[:25]
         act = sorted(info, key=lambda s: -info[s]["p"] * info[s]["v"])[:25]
         buzz = sorted(st, key=lambda s: -st[s]["heat"])[:40]
