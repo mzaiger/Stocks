@@ -15,10 +15,10 @@ A Google Apps Script timer (the same pattern as SlickDealsTracker) triggers a Gi
 
 | Secret name | Service | Used for |
 |---|---|---|
-| `FMP_Key` | [Financial Modeling Prep](https://site.financialmodelingprep.com/developer) (free plan, 250 requests/day) | Biggest gainers, most actives, a screener call (volume and market cap), quotes, company websites (profile) |
+| `FMP_Key` | [Financial Modeling Prep](https://site.financialmodelingprep.com/developer) (free plan, 250 requests/day) | Biggest gainers, most actives, company websites (profile); the screener and batch quote only if your plan allows them |
 | `GEMINI_KEY` | Google Gemini (the same secret name TrendingTopics and SportsDashboard use) | The "why is it trending" line on each tile. Optional: without it the tiles simply have no line |
 
-Add them under **Settings > Secrets and variables > Actions**. ApeWisdom, Yahoo Finance's headline feed and Google News need no key. Locally, set environment variables with the same names.
+Add them under **Settings > Secrets and variables > Actions**. ApeWisdom, Yahoo Finance (quotes and headlines) and Google News need no key. Locally, set environment variables with the same names.
 
 ## Files
 
@@ -89,7 +89,13 @@ Each run uses 3 requests: gainers (1), most actives (1) and one **screener** cal
 
 15 minutes is the fastest interval that fits. The script protects the limit itself: it counts requests per Eastern day in `state/usage.json` and keeps back 3 requests for every run still to come today plus a margin of 20. **Only what is left over is spent on the optional calls**: company profile lookups (up to 4 per run, most important stocks first: on the most rankings, then best rank) and single quotes. At 15 minutes that leaves roughly 35 optional calls a day; websites and market caps are remembered for 30 days, so the cache fills within a few days.
 
-**If the screener is not on your plan** (HTTP 402/403) the script notices, stops trying for the day and falls back to the batch quote, and if that is blocked too, to a few single quotes per run (most important stocks first). Volume and market cap then fill in for fewer stocks and some tiles show "—". Run `python stocks.py check` to see which endpoints your plan allows. ApeWisdom is a free public service with no stated limit; one request per run is light.
+**Where volume and market cap come from.** FMP's free plan blocks the screener and the batch quote (HTTP 402), and its most-active list has no volume. So each run tries these in order and uses the first that works:
+
+1. FMP screener (1 request, only if your plan has it).
+2. **Yahoo Finance batch quote**, no key and **no FMP request**: one call (plus a cookie and crumb request) returns price, change, volume and market cap for the gainers, most-active and Reddit tickers together. This is an unofficial feed that can change or refuse cloud IPs without notice. If it fails, the script waits 60 minutes (`YAHOO_RETRY_MINUTES`) before asking again.
+3. FMP batch quote, then a few FMP single quotes per run (most important stocks first), within the request budget. Some tiles show "—" for volume and market cap until they are filled in.
+
+With Yahoo working a run costs only 2 FMP requests, so the optional budget grows; raise `PROFILES_PER_RUN` (default 4) to fill in websites faster. Run `python stocks.py check` to see which of these your setup can reach. ApeWisdom is a free public service with no stated limit; one request per run is light.
 
 ### Changing the interval
 
@@ -125,9 +131,9 @@ Applied when each snapshot is taken. All can be overridden with environment vari
 | Shares traded today at least (screener) | 500,000 | `MIN_SHARE_VOLUME` |
 | Ticker must look like a real symbol | 1 to 6 letters | |
 
-**How the filters use the screener:** each run asks FMP's screener for every stock with a market cap, price and share volume above the limits (`isActivelyTrading`, no ETFs or funds, up to `UNIVERSE_LIMIT` = 1000 rows). That one call supplies the volume and market cap shown on the tiles. When the answer is complete (more than 200 rows and not cut off by the limit), any stock on the gainers, most-active or Reddit list that is **not** in it is dropped: it is below a limit, or it is an ETF or fund. If the answer is missing or looks cut off, nothing is dropped this way and the old rules apply (the market cap and dollar-volume limits only when the values are known).
+**How the filters use the screener (if your plan has it):** each run asks FMP's screener for every stock with a market cap, price and share volume above the limits (`isActivelyTrading`, no ETFs or funds, up to `UNIVERSE_LIMIT` = 1000 rows). That one call supplies the volume and market cap shown on the tiles. When the answer is complete (more than 200 rows and not cut off by the limit), any stock on the gainers, most-active or Reddit list that is **not** in it is dropped: it is below a limit, or it is an ETF or fund. If the answer is missing or looks cut off (always the case on the free plan), nothing is dropped this way: the price, exchange, market cap and dollar-volume limits are applied to each stock using the Yahoo or FMP quote values, and a limit is skipped when its value is unknown.
 
-Reddit tickers get their price, volume and market cap from the same screener answer; if it is unavailable, up to `BUZZ_LOOKUP` (40) of them get a quote instead, and a ticker that cannot be priced is left out. Other settings: `BUZZ_FILTER` (default `all-stocks`; also `wallstreetbets`, `stocks`, ...) and `BUZZ_PAGES` (100 tickers each).
+Reddit tickers get their price, change, volume and market cap from the screener or the Yahoo batch quote (all 100 in one request); if neither works, up to `BUZZ_LOOKUP` (40) of them get an FMP quote instead, and a ticker that cannot be priced is left out. Other settings: `BUZZ_FILTER` (default `all-stocks`; also `wallstreetbets`, `stocks`, ...) and `BUZZ_PAGES` (100 tickers each).
 
 ## The page
 

@@ -6,7 +6,8 @@
     python stocks.py check     call each API once and print what came back (uses 6 FMP requests)
     python stocks.py demo      write fake snapshots + board into demo_data/ (open index.html?data=demo_data)
 
-FMP (secret FMP_Key): biggest gainers, most actives, a screener call (volume + market cap), quotes, company websites (profile).
+FMP (secret FMP_Key): biggest gainers, most actives, company websites (profile), and when the plan allows it a screener / batch quote.
+Yahoo Finance (no key, unofficial): one batch quote per run for volume, market cap and change.
 Gemini (secret GEMINI_KEY, see why.py): a short 'why is it trending' line per stock, from recent headlines.
 ApeWisdom (no key): Reddit mention counts.
 Each run saves one small snapshot in state/snaps/. The board is rebuilt from those snapshots, so every
@@ -319,6 +320,53 @@ def fetch_universe(meta, et):
     return {r["sym"]: r for r in rows}, 200 <= len(rows) < UNIVERSE_LIMIT     # complete = the screener was not cut off by the limit
 
 
+YAHOO_UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            "Accept": "application/json,text/plain,*/*", "Accept-Language": "en-US,en;q=0.9"}
+YAHOO_RETRY_MIN = int(os.environ.get("YAHOO_RETRY_MINUTES", "60"))       # after a failure, wait this long before asking Yahoo again
+
+
+def fetch_yahoo(symbols, meta, now):
+    """Price, change, volume and market cap for many symbols in ONE keyless request (Yahoo Finance's unofficial quote feed).
+    Costs no FMP requests. Returns {sym: row}; {} if Yahoo refuses (then the FMP fallbacks run)."""
+    if not symbols:
+        return {}
+    ym = meta.setdefault("yahoo", {})
+    if ym.get("fail_t") and (now - parse_iso(ym["fail_t"])).total_seconds() < YAHOO_RETRY_MIN * 60:
+        return {}
+    out = {}
+    try:
+        sess = requests.Session()
+        sess.headers.update(YAHOO_UA)
+        sess.get("https://fc.yahoo.com", timeout=15)                       # sets the cookie (the page itself is a 404)
+        cr = sess.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=15)
+        crumb = cr.text.strip()
+        if cr.status_code != 200 or not crumb or len(crumb) > 40 or " " in crumb or "<" in crumb:
+            raise ValueError(f"no crumb (HTTP {cr.status_code})")
+        for i in range(0, len(symbols), 100):
+            r = sess.get("https://query1.finance.yahoo.com/v7/finance/quote", params={"symbols": ",".join(symbols[i:i + 100]), "crumb": crumb}, timeout=20)
+            if r.status_code != 200:
+                raise ValueError(f"quote HTTP {r.status_code}")
+            for q in (r.json().get("quoteResponse") or {}).get("result") or []:
+                sym = norm_sym(q.get("symbol"))
+                if not sym:
+                    continue
+                mc = num(q.get("marketCap"))
+                out[sym] = {"sym": sym, "n": (str(q.get("longName") or q.get("shortName") or "").strip()[:60] or None),
+                            "x": (str(q.get("fullExchangeName") or q.get("exchange") or "").strip() or None),
+                            "p": num(q.get("regularMarketPrice")), "c": num(q.get("regularMarketChangePercent")),
+                            "v": num(q.get("regularMarketVolume")), "mc": mc if mc and mc > 0 else None}
+    except (requests.RequestException, ValueError, KeyError, TypeError, AttributeError) as e:
+        ym["fail_t"] = iso(now)
+        print(f"  Yahoo quotes not available ({type(e).__name__}: {str(e)[:60] if isinstance(e, ValueError) else ''}); using FMP quotes")
+        return {}
+    if not out:
+        ym["fail_t"] = iso(now)
+        print("  Yahoo quotes returned nothing; using FMP quotes")
+        return {}
+    ym.pop("fail_t", None)
+    return out
+
+
 def fetch_quotes(symbols, meta, now, et):
     """Fresh quotes (price, change, volume, market cap): a batch call if the plan allows it, a few single calls otherwise."""
     global QUOTE_DONE
@@ -423,14 +471,17 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
 
     # volume + market cap for everything from ONE screener call; stocks missing from a complete screener fail the filters
     uni, complete = fetch_universe(meta, et)
+    ext = {}
+    if not complete:                       # no screener on this plan: Yahoo's batch quote covers the lists and the Reddit tickers
+        ext = fetch_yahoo(list(rows) + [b["sym"] for b in (buzz or []) if b["sym"] not in rows], meta, now)
     for sym, d in rows.items():
-        u = uni.get(sym)
+        u = uni.get(sym) or ext.get(sym)
         if u:
             for k in ("v", "mc"):
                 if u.get(k) is not None:
                     d[k] = u[k]
-            for k in ("n", "x"):
-                if not d.get(k) and u.get(k):
+            for k in ("n", "x", "p", "c"):
+                if d.get(k) is None and u.get(k) is not None:
                     d[k] = u[k]
     if complete and any(sym in uni for sym in rows):
         for sym in [sym for sym in rows if sym not in uni]:
@@ -443,7 +494,9 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
             continue
         if b["sym"] in uni:
             merge(uni[b["sym"]])
-        elif not (uni and complete):
+        elif b["sym"] in ext:
+            merge(ext[b["sym"]])
+        elif not (uni and complete) and not ext:
             pending.append(b["sym"])
     pending = pending[:BUZZ_LOOKUP]
     need = [sym for sym in sorted(rows, key=importance_key(rows)) if rows[sym].get("v") is None or rows[sym].get("mc") is None]
@@ -701,6 +754,8 @@ def check():
             print(f"  {name}: HTTP {st}, {len(data)} rows, fields: {', '.join(sorted(data[0]))}")
         else:
             print(f"  {name}: HTTP {st}, {str(data)[:150] if data is not None else 'no data'}")
+    y = fetch_yahoo(["AAPL", "MSFT"], {}, datetime.now(timezone.utc))
+    print("  Yahoo batch quote: " + (f"{len(y)} rows, AAPL volume {y.get('AAPL', {}).get('v')}, market cap {y.get('AAPL', {}).get('mc')}" if y else "not available from here"))
     items = why.headlines("AAPL", "Apple", datetime.now(timezone.utc))
     print(f"  headlines (Yahoo/Google News RSS): {len(items)} found" + (f", newest: {items[0][0][:70]}" if items else ""))
     print("  GEMINI_KEY: " + ("set" if os.environ.get("GEMINI_KEY", "").strip() else "NOT set (no 'why trending' lines)"))
