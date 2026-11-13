@@ -1,7 +1,7 @@
 name: Update stocks
 
 on:
-  # Timing comes from Google Apps Script (apps-script/Code.gs), which sends this event every 15 minutes
+  # Timing comes from Google Apps Script (apps-script/Code.gs, function triggerStocks), which sends this event every 15 minutes
   # during the market session. GitHub's own cron schedule is not used because it is not reliable.
   repository_dispatch:
     types: [trigger-stocks-pull]
