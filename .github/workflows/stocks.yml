@@ -39,6 +39,7 @@ jobs:
       - name: Take a snapshot and rebuild the board
         env:
           FMP_Key: ${{ secrets.FMP_Key }}
+          GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
           FORCE: ${{ (inputs.force || github.event.client_payload.force) && '1' || '0' }}
         run: python stocks.py run
 
