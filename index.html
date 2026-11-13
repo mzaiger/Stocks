@@ -55,24 +55,16 @@
   .ticker a:hover { color:var(--blue); border-bottom-color:var(--blue); }
   .ticker a:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
   .price { font-family:'IBM Plex Mono',monospace; font-size:15px; font-weight:600; }
-  .name { font-size:12.5px; line-height:1.3; color:var(--text-dim); margin:0 0 10px; overflow-wrap:anywhere; min-height:1.3em; }
+  .name { font-size:12.5px; line-height:1.3; color:var(--text-dim); margin:0 0 8px; overflow-wrap:anywhere; min-height:1.3em; }
   .chips { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; width:100%; margin:0; }
   .chip { background:var(--panel); border:1px solid var(--line); border-radius:7px; padding:8px 2px; min-width:0; width:100%; text-align:center; font-family:'IBM Plex Mono',monospace; font-size:14.5px; font-weight:600; }
   .chip small { display:block; font-size:11px; font-weight:500; color:var(--text-dim); letter-spacing:.06em; text-transform:uppercase; margin-bottom:2px; }
-  .chip .sub2 { display:block; font-size:10.5px; font-weight:500; color:var(--text-dim); margin-top:1px; }
+  .chip .val { display:flex; flex-wrap:wrap; justify-content:center; align-items:baseline; gap:0 5px; line-height:1.25; }
+  .chip .pct { font-size:11.5px; font-weight:600; }
+  .chip .rk { display:block; font-size:11px; font-weight:500; color:var(--text-dim); margin-top:3px; padding-top:3px; border-top:1px solid var(--line); }
+  .why { font-size:12.5px; line-height:1.4; color:var(--text); margin:0 0 10px; }
+  .when { font-family:'IBM Plex Mono',monospace; font-size:11.5px; font-weight:400; color:var(--text-dim); margin:8px 0 0; }
   .up { color:var(--up); } .down { color:var(--down); }
-  .scorebar { display:flex; align-items:center; gap:8px; margin:10px 0 0; font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--text-dim); }
-  .scorebar b { font-size:20px; color:var(--text); font-weight:600; }
-  .meter { flex:1; height:6px; background:var(--panel); border:1px solid var(--line); border-radius:999px; overflow:hidden; }
-  .meter i { display:block; height:100%; background:var(--blue); }
-  .detail { font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--text-dim); margin:6px 0 0; line-height:1.55; }
-  .detail b { font-weight:600; color:var(--text); }
-  .rk { font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--text-dim); margin:8px 0 0; line-height:1.55; }
-  .rk b { color:var(--text); font-weight:600; }
-  .seen { font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--text-dim); margin:6px 0 0; line-height:1.55; }
-  .seen b { color:var(--text); font-weight:600; }
-  .seen .ago { color:var(--blue); font-weight:600; white-space:nowrap; }
-  .watch-label { font-family:'IBM Plex Mono',monospace; font-size:11.5px; font-weight:600; color:#1E7A4D; margin:10px 0 0; }
   .links { display:grid; gap:6px; width:100%; margin-top:6px; margin-top:auto; padding-top:6px; }
   .links a { display:flex; align-items:center; justify-content:center; gap:3px; min-width:0; height:42px; background:var(--panel); border:1px solid var(--line); border-radius:8px; color:var(--blue); text-decoration:none; font-family:'IBM Plex Mono',monospace; font-size:14px; font-weight:600; transition:border-color .15s ease, background .15s ease; }
   .links a:hover { border-color:var(--blue); background:#fff; }
@@ -92,7 +84,7 @@
     <div class="updated-row"><span id="lastUpdated">Last updated: —</span><button class="refresh-btn" id="refreshBtn" type="button">Refresh</button></div>
   </div>
   <h1>Stock Board</h1>
-  <p class="sub">Stocks that are moving, heavily traded and talked about. Each stock gets three scores from 0 to 100: <b>Gainers</b> (price gain, for stocks on the top-gainers list), <b>Most Active</b> (dollars traded, for stocks on the most-active list) and <b>Buzz</b> (Reddit mentions). The <b>All</b> tab only lists stocks that are on <b>at least 2 of the 3 rankings</b> in the time frame, ranked by the average of the three scores. Scores are averaged across every snapshot in the time frame you pick, so a stock that stays on the lists beats one that spiked once. Star a stock to keep it handy. Small and penny stocks are filtered out.</p>
+  <p class="sub">Stocks that are moving, heavily traded and talked about. <b>Gainers</b> are the biggest gains today, <b>Most Active</b> the heaviest trading, <b>Buzz</b> the most Reddit mentions. The <b>All</b> tab only lists stocks that are on <b>at least 2 of the 3 rankings</b> in the time frame, ranked by the three scores (0 to 100) averaged evenly. Rankings are averaged across every snapshot in the time frame you pick, so a stock that stays on the lists beats one that spiked once. Each tile has a short AI summary of why the stock is trending, based on recent headlines and refreshed every 4 hours. Star a stock to keep it handy. Small and penny stocks are filtered out.</p>
 </header>
 <main>
   <div class="controls">
@@ -129,7 +121,7 @@ let favOnly = pref('stocks_favonly', '0') === '1';
 let favs = new Set((() => { try { const a = JSON.parse(pref('stocks_favs', '[]')); return Array.isArray(a) ? a.filter(x => typeof x === 'string') : []; } catch { return []; } })());
 
 const winLabel = m => m < 60 ? `${m} Min` : m % 60 === 0 ? (m === 60 ? '1 Hour' : `${m / 60} Hours`) : `${m} Min`;
-const money = v => v == null ? '—' : v >= 1e9 ? `$${(v / 1e9).toFixed(v >= 1e10 ? 0 : 1)}B` : v >= 1e6 ? `$${(v / 1e6).toFixed(v >= 1e8 ? 0 : 1)}M` : `$${Math.round(v / 1e3)}K`;
+const money = v => v == null ? '—' : v >= 1e12 ? `$${(v / 1e12).toFixed(v >= 1e13 ? 0 : 1)}T` : v >= 1e9 ? `$${(v / 1e9).toFixed(v >= 1e10 ? 0 : 1)}B` : v >= 1e6 ? `$${(v / 1e6).toFixed(v >= 1e8 ? 0 : 1)}M` : `$${Math.round(v / 1e3)}K`;
 const count = v => v == null ? '—' : v >= 1e4 ? `${(v / 1e3).toFixed(0)}K` : v >= 1e3 ? `${(v / 1e3).toFixed(1)}K` : String(v);
 const sign = v => (v > 0 ? '+' : '') + v.toFixed(2) + '%';
 function ago(iso) {
@@ -159,14 +151,15 @@ function logoErr(img) {                       // favicon -> company logo -> tick
   if (next) { img.dataset.next = ''; img.src = next; return; }
   const d = document.createElement('div'); d.className = 'thumb-fallback'; d.textContent = img.dataset.sym || ''; img.replaceWith(d);
 }
-const whenText = iso => new Date(iso).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' }) + ' ET';
-function agoText(iso) {
+const shares = v => v == null ? '—' : v >= 1e9 ? `${(v / 1e9).toFixed(2)}B` : v >= 1e8 ? `${Math.round(v / 1e6)}M` : v >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `${Math.round(v / 1e3)}K` : String(Math.round(v));
+function agoText(iso) {                       // same wording as the other boards: 12m ago, 3h 5m ago, 2d 4h ago
   const t = new Date(iso).getTime(); if (!Number.isFinite(t)) return '';
   const min = Math.max(0, Math.round((Date.now() - t) / 60000));
-  if (min < 60) return `${min} min ago`;
+  if (min < 60) return `${min}m ago`;
   const h = Math.floor(min / 60);
-  return h < 24 ? `${h} h ${min % 60} min ago` : `${Math.floor(h / 24)} d ${h % 24} h ago`;
+  return h < 24 ? `${h}h ${min % 60}m ago` : `${Math.floor(h / 24)}d ${h % 24}h ago`;
 }
+const whenText = iso => new Date(iso).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' }) + ' ET';
 
 function cardHtml(sym, st, sc, rank, tabDef, ranks) {
   const q = encodeURIComponent(sym);
@@ -175,17 +168,14 @@ function cardHtml(sym, st, sc, rank, tabDef, ranks) {
   const fmpLogo = `https://images.financialmodelingprep.com/symbol/${q}.png`;
   const imgSrc = site ? fav(site.hostname) : fmpLogo, imgNext = site ? fmpLogo : '';
   const icon = (href, src, name) => `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="${esc(name)}" aria-label="${esc(name)}"><img src="${esc(src)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.replaceWith(document.createTextNode('${name[0]}'))"><span class="arrow">↗</span></a>`;
-  const links = [icon(`https://finance.yahoo.com/quote/${q}`, fav('finance.yahoo.com'), 'Yahoo Finance')];
+  const links = [];
   if (site) links.push(icon(site.href, fav(site.hostname), 'Company website'));
-  links.push(icon(`https://www.tradingview.com/symbols/${encodeURIComponent(sym.replace('-', '.'))}/`, fav('tradingview.com'), 'TradingView'),
-              icon(`https://stocktwits.com/symbol/${q}`, fav('stocktwits.com'), 'StockTwits'),
-              icon(`https://www.reddit.com/search/?q=%24${q}`, fav('reddit.com'), 'Reddit'));
-  const val = sc ? sc[tabDef.i] : null;
-  const f1 = v => v == null ? '—' : Math.round(v);
+  links.push(icon(`https://finance.yahoo.com/quote/${q}`, fav('finance.yahoo.com'), 'Yahoo Finance'),
+             icon(`https://www.tradingview.com/symbols/${encodeURIComponent(sym.replace('-', '.'))}/`, fav('tradingview.com'), 'TradingView'),
+             icon(`https://stocktwits.com/symbol/${q}`, fav('stocktwits.com'), 'StockTwits'),
+             icon(`https://www.reddit.com/search/?q=%24${q}`, fav('reddit.com'), 'Reddit'));
   const surge = st.m != null && st.m24 != null ? (st.m24 === 0 ? (st.m > 0 ? 'new' : '') : `${st.m >= st.m24 ? '▲' : '▼'}${Math.abs(Math.round((st.m / st.m24 - 1) * 100))}%`) : '';
-  const of = board.snaps[String(win)] || 0;
-  const rk = n => n ? `#${n}` : '—';
-  const onCount = [0, 1, 2].filter(i => ranks[i].has(sym)).length;
+  const rk = (i, what) => `<span class="rk" title="Rank on the ${what} tab in this time frame">${ranks[i].get(sym) ? '#' + ranks[i].get(sym) : '—'}</span>`;
   return `<article class="card${sc ? '' : ' ghost'}">
     <div class="thumb-wrap"><img src="${esc(imgSrc)}" data-next="${esc(imgNext)}" data-sym="${esc(sym.slice(0, 4))}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="logoErr(this)">
       <label class="fav-toggle" title="Favorite"><input type="checkbox" class="fav-input" data-sym="${esc(sym)}" ${favs.has(sym) ? 'checked' : ''}><span class="fav-star">★</span></label>
@@ -193,16 +183,14 @@ function cardHtml(sym, st, sc, rank, tabDef, ranks) {
     </div>
     <div class="body">
       <div class="ticker-row"><p class="ticker"><a href="https://finance.yahoo.com/quote/${q}" target="_blank" rel="noopener noreferrer" title="Open ${esc(sym)} on Yahoo Finance">${esc(sym)}</a></p><span class="price">${st.p != null ? '$' + st.p.toFixed(2) : '—'}</span></div>
-      <p class="name">${esc(st.n || '')}${st.x ? ` · ${esc(st.x)}` : ''}</p>
+      <p class="name" title="${st.x ? esc(st.x) : ''}">${esc(st.n || '')}${st.mc ? ` · ${money(st.mc)}` : ''}</p>
+      ${st.why ? `<p class="why" title="${st.why_t ? 'Written ' + esc(agoText(st.why_t)) : ''}">${esc(st.why)}</p>` : ''}
       <div class="chips">
-        <div class="chip" title="Change since the previous close"><small>Chg</small><span class="${st.c > 0 ? 'up' : st.c < 0 ? 'down' : ''}">${st.c == null ? '—' : sign(st.c)}</span></div>
-        <div class="chip" title="Dollars traded today, or rank on the most-active list"><small>Volume</small>${st.dv != null ? money(st.dv) : (st.ar ? '#' + st.ar : '—')}</div>
-        <div class="chip" title="Reddit mentions in the last 24 hours (and the change from the 24 hours before)"><small>Buzz</small>${count(st.m)}${surge ? `<span class="sub2 ${surge[0] === '▲' ? 'up' : surge[0] === '▼' ? 'down' : ''}">${surge}</span>` : ''}</div>
+        <div class="chip" title="Change since the previous close"><small>Chg</small><span class="val ${st.c > 0 ? 'up' : st.c < 0 ? 'down' : ''}">${st.c == null ? '—' : sign(st.c)}</span>${rk(0, 'Gainers')}</div>
+        <div class="chip" title="Shares traded today"><small>Volume</small><span class="val">${shares(st.v)}</span>${rk(1, 'Most Active')}</div>
+        <div class="chip" title="Reddit mentions in the last 24 hours, and the change from the 24 hours before"><small>Buzz</small><span class="val">${count(st.m)}${surge ? `<span class="pct ${surge[0] === '▲' ? 'up' : surge[0] === '▼' ? 'down' : ''}">${surge}</span>` : ''}</span>${rk(2, 'Buzz')}</div>
       </div>
-      ${sc ? `<p class="rk">Rankings (${onCount} of 3): Gainers <b>${rk(ranks[0].get(sym))}</b> · Active <b>${rk(ranks[1].get(sym))}</b> · Buzz <b>${rk(ranks[2].get(sym))}</b></p>
-      <div class="scorebar"><b>${f1(val)}</b><div class="meter"><i style="width:${Math.max(0, Math.min(100, val || 0))}%"></i></div></div>
-      <p class="detail">Gain <b>${f1(sc[0])}</b> · Active <b>${f1(sc[1])}</b> · Buzz <b>${f1(sc[2])}</b> · on the lists in <b>${sc[4]}</b> of ${of} snapshot${of === 1 ? '' : 's'}</p>` : `<p class="detail">Not on the lists in this time frame.</p>`}
-      ${st.t ? `<p class="seen">Last in the data: <b>${esc(whenText(st.t))}</b> · <span class="ago" data-t="${esc(st.t)}">${esc(agoText(st.t))}</span></p>` : ''}
+      ${st.since ? `<p class="when" title="Trending since ${esc(whenText(st.since))}"><span class="ago" data-t="${esc(st.since)}">${esc(agoText(st.since))}</span></p>` : ''}
       <div class="links" style="grid-template-columns:repeat(${links.length},minmax(0,1fr))">${links.join('')}</div>
     </div>
   </article>`;

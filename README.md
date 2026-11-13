@@ -15,23 +15,26 @@ A Google Apps Script timer (the same pattern as SlickDealsTracker) triggers a Gi
 
 | Secret name | Service | Used for |
 |---|---|---|
-| `FMP_Key` | [Financial Modeling Prep](https://site.financialmodelingprep.com/developer) (free plan, 250 requests/day) | Biggest gainers, most actives, quotes for Reddit-only tickers, company websites (profile) |
+| `FMP_Key` | [Financial Modeling Prep](https://site.financialmodelingprep.com/developer) (free plan, 250 requests/day) | Biggest gainers, most actives, a screener call (volume and market cap), quotes, company websites (profile) |
+| `GEMINI_KEY` | Google Gemini (the same secret name TrendingTopics and SportsDashboard use) | The "why is it trending" line on each tile. Optional: without it the tiles simply have no line |
 
-Add it under **Settings > Secrets and variables > Actions**. ApeWisdom needs no key. Locally, set an environment variable named `FMP_Key`.
+Add them under **Settings > Secrets and variables > Actions**. ApeWisdom, Yahoo Finance's headline feed and Google News need no key. Locally, set environment variables with the same names.
 
 ## Files
 
 | File | What it is |
 |---|---|
 | `index.html` | The page: tabs, time frames, favorites, stock tiles |
-| `stocks.py` | Does all the work. `run` (one snapshot), `rebuild` (board from saved snapshots, no key), `check` (test the APIs), `demo` (fake data for previewing) |
+| `stocks.py` | Does the work. `run` (one snapshot), `rebuild` (board from saved snapshots, no key), `check` (test the APIs), `demo` (fake data for previewing) |
+| `why.py` | Fetches recent headlines and makes the one Gemini call per run that writes the "why is it trending" lines |
 | `.github/workflows/stocks.yml` | Runs on a `repository_dispatch` event (`trigger-stocks-pull`) or manually; no cron schedule. Exits by itself when the market session is closed |
 | `apps-script/Code.gs` | The Google Apps Script timer that sends the event. Paste it into script.google.com |
 | `data/board.json` | What the page reads: every stock's scores for every time frame, rebuilt on each run |
 | `state/snaps/*.json` | One small file per snapshot, kept for the longest time frame plus 2 hours, then deleted |
 | `state/usage.json` | FMP requests spent today |
-| `state/meta.json` | Cached price/exchange/market cap for Reddit-only tickers |
-| `state/profiles.json` | Company websites from FMP's company profile, remembered for 90 days (14 days if a company had none) |
+| `state/meta.json` | Cached quote info, and which optional FMP endpoints the plan does not allow today |
+| `state/profiles.json` | Company website and market cap from FMP's company profile, remembered for 30 days (14 days if a company had no website) |
+| `state/why.json` | The "why trending" line for each stock and when it was written |
 | `requirements.txt` | `requests`, `tzdata` |
 
 ## First run
@@ -75,16 +78,18 @@ Notes:
 
 ## Rate limits (FMP free: 250 requests per day)
 
-Each run uses: gainers (1), most actives (1), and one batch quote for Reddit-only tickers (1) = 3 requests.
+Each run uses 3 requests: gainers (1), most actives (1) and one **screener** call (1) that returns volume and market cap for every stock that passes the filters. Gemini and the headline feeds do not use FMP requests.
 
 | Interval | Runs per day (16 hours) | Requests per day | Fits in 250? |
 |---|---|---|---|
-| 15 min | 64 | 192 (128 without the quote call) | Yes, about 40 spare |
+| 15 min | 64 | 192 | Yes, about 40 spare |
 | 30 min | 32 | 96 | Yes |
 | 1 hour | 16 | 48 | Yes |
-| 10 min | 96 | 288 (192 without the quote call) | Only without the quote call |
+| 10 min | 96 | 288 | No |
 
-15 minutes is the fastest interval that fits with everything on. The script also protects the limit itself: it counts requests per Eastern day in `state/usage.json` and keeps back 3 requests for every run still to come today (gainers, actives, quote) plus a margin of 20. **Only what is left over is spent on the optional calls**: company profile lookups (up to 4 per run, most important stocks first: on the most rankings, then best rank) and single-quote fallbacks. At 15 minutes that leaves roughly 35 profile lookups a day, and each website is remembered for 90 days, so the cache fills within a few days. If the plan does not include the batch quote or profile endpoints, it notices (HTTP 402/403), stops trying for the day and carries on without them. ApeWisdom is a free public service with no stated limit; one request per run is light.
+15 minutes is the fastest interval that fits. The script protects the limit itself: it counts requests per Eastern day in `state/usage.json` and keeps back 3 requests for every run still to come today plus a margin of 20. **Only what is left over is spent on the optional calls**: company profile lookups (up to 4 per run, most important stocks first: on the most rankings, then best rank) and single quotes. At 15 minutes that leaves roughly 35 optional calls a day; websites and market caps are remembered for 30 days, so the cache fills within a few days.
+
+**If the screener is not on your plan** (HTTP 402/403) the script notices, stops trying for the day and falls back to the batch quote, and if that is blocked too, to a few single quotes per run (most important stocks first). Volume and market cap then fill in for fewer stocks and some tiles show "—". Run `python stocks.py check` to see which endpoints your plan allows. ApeWisdom is a free public service with no stated limit; one request per run is light.
 
 ### Changing the interval
 
@@ -117,9 +122,12 @@ Applied when each snapshot is taken. All can be overridden with environment vari
 | Exchange | NASDAQ, NYSE, AMEX, BATS, CBOE (no OTC) | `EXCHANGES` |
 | Market cap at least (when known) | $300M | `MIN_MARKET_CAP` |
 | Dollars traded at least (when known) | $5M | `MIN_DOLLAR_VOLUME` |
+| Shares traded today at least (screener) | 500,000 | `MIN_SHARE_VOLUME` |
 | Ticker must look like a real symbol | 1 to 6 letters | |
 
-Reddit tickers that are not on the FMP lists get a price check (batch quote) so the same filters apply. If a Reddit ticker cannot be priced, it is left out, because the filters cannot run on it. Other settings: `BUZZ_FILTER` (default `all-stocks`; also `wallstreetbets`, `stocks`, ...), `BUZZ_PAGES` (100 tickers each), `BUZZ_LOOKUP` (how many top Reddit tickers get a price check, default 40).
+**How the filters use the screener:** each run asks FMP's screener for every stock with a market cap, price and share volume above the limits (`isActivelyTrading`, no ETFs or funds, up to `UNIVERSE_LIMIT` = 1000 rows). That one call supplies the volume and market cap shown on the tiles. When the answer is complete (more than 200 rows and not cut off by the limit), any stock on the gainers, most-active or Reddit list that is **not** in it is dropped: it is below a limit, or it is an ETF or fund. If the answer is missing or looks cut off, nothing is dropped this way and the old rules apply (the market cap and dollar-volume limits only when the values are known).
+
+Reddit tickers get their price, volume and market cap from the same screener answer; if it is unavailable, up to `BUZZ_LOOKUP` (40) of them get a quote instead, and a ticker that cannot be priced is left out. Other settings: `BUZZ_FILTER` (default `all-stocks`; also `wallstreetbets`, `stocks`, ...) and `BUZZ_PAGES` (100 tickers each).
 
 ## The page
 
@@ -127,11 +135,27 @@ Each tile, top to bottom:
 
 1. **Rank and favorite:** the rank in the current tab and time frame (top right) and the favorite star (top left).
 2. **Company icon:** the favicon of the company's website when the FMP profile has one (requested at 128 px and shown large), otherwise FMP's logo for the ticker, otherwise the ticker letters. Favicons are often small, so some look soft.
-3. **Stock info:** the ticker (a link to Yahoo Finance), price, company name and exchange, change since the previous close, dollars traded, Reddit mentions with the change from the day before, the stock's rank on each of the three tabs ("Rankings (2 of 3)"), its score in this tab and the three component scores, and how many snapshots it was on the lists.
-4. **Last in the data:** the date and time of the newest snapshot the stock appeared in (Eastern time) and how many minutes ago that was. The "minutes ago" updates every 30 seconds without reloading.
-5. **Links at the bottom:** Yahoo Finance, the company website (only if known), TradingView, StockTwits and Reddit ($TICKER search).
+3. **Ticker and price:** the ticker links to Yahoo Finance.
+4. **Company name and market cap**, for example "Robinhood Markets · $210B".
+5. **Why it is trending:** the Gemini line (see below), if there is one yet.
+6. **Three boxes:** **Chg** (change since the previous close), **Volume** (shares traded today, for example 52.3M) and **Buzz** (Reddit mentions in 24 hours with the change from the day before side by side, for example 21K ▲11%). Under each is the stock's rank on that tab in the current time frame, or "—" if it is not on that ranking.
+7. **How long it has been trending:** for example "35m ago", "3h 5m ago" (same wording as the other boards). It counts from the first of the stock's current run of snapshots; a gap of more than 2.5 intervals starts a new run, and it cannot reach back further than the snapshots kept (about a day). Hover for the date and time. It updates every 30 seconds without reloading.
+8. **Links at the bottom:** the company website (only if known), Yahoo Finance, TradingView, StockTwits and Reddit ($TICKER search).
+
+The scores still decide the order of the tabs, but they are no longer shown on the tiles.
 
 Also: the four tabs, one row of time frame buttons built from the interval in `board.json`, and **★ Favorites** (starred stocks are saved in your browser; ones not on the lists right now show greyed out). No sorting buttons; the order is the rank. The page reloads the data every 5 minutes, and `?data=demo_data` loads the demo folder instead of `data/`.
+
+## Why is it trending (Gemini)
+
+Copied from the TrendingTopics approach. `why.py`:
+
+1. After each snapshot, finds the stocks in it that have **no description yet or a description that is 4 hours old** (`WHY_TTL_HOURS`). Everything else is left alone, so a stock is asked about at most every 4 hours.
+2. Fetches up to 5 recent headlines per such stock from Yahoo Finance's ticker feed (Google News as the fallback; no key needed).
+3. Sends all of them, with the stock's numbers (change, volume, market cap, which rankings, Reddit mentions), in **one Gemini call per run** (at most `WHY_MAX_PER_RUN` = 25 stocks, most important first) and asks for one or two short sentences. The model chain is `gemini-3.5-flash-lite`, then `gemini-3.1-flash-lite`, then `gemini-2.5-flash-lite`, tried in that order when a model is unavailable.
+4. The prompt tells the model to use only the material it is given, to say so plainly when the headlines do not explain the move, and not to predict or advise. Nothing is written back if Gemini fails; the old line stays and the stock is asked about again on the next run.
+
+Lines are stored in `state/why.json` for 7 days and copied into `data/board.json`. Without `GEMINI_KEY` the tiles just have no line. A line is only as good as the headlines found, so some will honestly say that no clear news was found.
 
 ## Notes
 

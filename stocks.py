@@ -3,10 +3,11 @@
 
     python stocks.py run       take one snapshot (only inside the market session) and rebuild data/board.json
     python stocks.py rebuild   rebuild data/board.json from the saved snapshots (no API calls, no key needed)
-    python stocks.py check     call each API once and print what came back (uses 5 FMP requests)
+    python stocks.py check     call each API once and print what came back (uses 6 FMP requests)
     python stocks.py demo      write fake snapshots + board into demo_data/ (open index.html?data=demo_data)
 
-FMP (secret FMP_Key): biggest gainers, most actives, quotes for Reddit-only tickers, company websites (profile).
+FMP (secret FMP_Key): biggest gainers, most actives, a screener call (volume + market cap), quotes, company websites (profile).
+Gemini (secret GEMINI_KEY, see why.py): a short 'why is it trending' line per stock, from recent headlines.
 ApeWisdom (no key): Reddit mention counts.
 Each run saves one small snapshot in state/snaps/. The board is rebuilt from those snapshots, so every
 time frame (15 min ... 24 hours) is just a different slice of the same files.
@@ -28,6 +29,8 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+import why
+
 # ---------- settings (all can be overridden with environment variables) ----------
 FMP_KEY = os.environ.get("FMP_Key", "").strip()                         # GitHub secret FMP_Key
 INTERVAL = int(os.environ.get("INTERVAL_MIN", "15"))                    # minutes between runs (must match the cron)
@@ -46,7 +49,9 @@ MAX_QUOTES = int(os.environ.get("MAX_QUOTES_PER_RUN", "40"))            # symbol
 SINGLE_QUOTES = int(os.environ.get("SINGLE_QUOTES_PER_RUN", "6"))       # one-by-one fallback calls per run
 META_TTL_H = int(os.environ.get("META_TTL_HOURS", "24"))
 PROFILES_PER_RUN = int(os.environ.get("PROFILES_PER_RUN", "4"))         # company profile lookups (website) per run, if the budget allows
-PROFILE_TTL_DAYS = int(os.environ.get("PROFILE_TTL_DAYS", "90"))        # how long a website is remembered
+PROFILE_TTL_DAYS = int(os.environ.get("PROFILE_TTL_DAYS", "30"))        # how long a website / market cap is remembered
+UNIVERSE_LIMIT = int(os.environ.get("UNIVERSE_LIMIT", "1000"))          # rows asked from the FMP screener (volume + market cap for all stocks)
+MIN_SHARE_VOL = int(os.environ.get("MIN_SHARE_VOLUME", "500000"))       # screener: at least this many shares traded today
 PROFILE_RETRY_DAYS = int(os.environ.get("PROFILE_RETRY_DAYS", "14"))    # retry a company that had no website after this
 DATA = Path(os.environ.get("DATA_DIR", "data"))
 STATE = Path(os.environ.get("STATE_DIR", "state"))
@@ -200,6 +205,11 @@ def room():
     return FMP_LIMIT - USAGE["fmp"] - RESERVE_AFTER >= 1
 
 
+def can_call():
+    """May another FMP call be made? The first call of the quote slot uses the run's own reservation; later ones need spare budget."""
+    return spare() >= 1 if QUOTE_DONE else room()
+
+
 def get_json(url, params=None, tries=3, fmp=False):
     status = 0
     for i in range(tries):
@@ -235,9 +245,10 @@ def fmp_row(r):
     c = r.get("changesPercentage")
     if c is None:
         c = r.get("changePercentage")
-    return {"sym": sym, "n": (str(r.get("name") or "").strip()[:60] or None),
-            "x": (str(r.get("exchange") or r.get("exchangeShortName") or "").strip() or None),
-            "p": num(r.get("price")), "c": num(c), "v": num(r.get("volume")), "mc": num(r.get("marketCap"))}
+    mc = num(r.get("marketCap"))
+    return {"sym": sym, "n": (str(r.get("name") or r.get("companyName") or "").strip()[:60] or None),
+            "x": (str(r.get("exchangeShortName") or r.get("exchange") or "").strip() or None),
+            "p": num(r.get("price")), "c": num(c), "v": num(r.get("volume")), "mc": mc if mc and mc > 0 else None}
 
 
 def fmp_list(path):
@@ -289,16 +300,35 @@ def cache_entry(row, now):
     return {k: v for k, v in {"n": row.get("n"), "x": row.get("x"), "p": row.get("p"), "mc": row.get("mc"), "t": iso(now)}.items() if v is not None}
 
 
+def fetch_universe(meta, et):
+    """One screener call: volume and market cap for every stock that passes the filters. Returns (rows by symbol, complete)."""
+    global QUOTE_DONE
+    today = et.date().isoformat()
+    sm = meta.setdefault("screener", {})
+    if (sm.get("ok") is False and sm.get("day") == today) or not can_call():
+        return {}, False
+    data, st = fmp("company-screener", marketCapMoreThan=int(MIN_MCAP), priceMoreThan=MIN_PRICE, volumeMoreThan=MIN_SHARE_VOL,
+                   isActivelyTrading="true", isEtf="false", isFund="false", limit=UNIVERSE_LIMIT)
+    QUOTE_DONE = True
+    rows = [x for x in (fmp_row(r) for r in data if isinstance(r, dict)) if x] if isinstance(data, list) else []
+    if not rows:
+        sm.update(ok=False, day=today)
+        print(f"  screener not available (HTTP {st}); falling back to quotes")
+        return {}, False
+    sm.update(ok=True, day=today)
+    return {r["sym"]: r for r in rows}, 200 <= len(rows) < UNIVERSE_LIMIT     # complete = the screener was not cut off by the limit
+
+
 def fetch_quotes(symbols, meta, now, et):
-    """Fresh quotes for symbols (batch call if the plan allows it, a few single calls otherwise)."""
+    """Fresh quotes (price, change, volume, market cap): a batch call if the plan allows it, a few single calls otherwise."""
     global QUOTE_DONE
     out = {}
-    if not symbols or not room():
+    if not symbols:
         return out
     q = meta.setdefault("q", {})
     bm = meta.setdefault("batch", {})
     today = et.date().isoformat()
-    if not (bm.get("ok") is False and bm.get("day") == today):
+    if not (bm.get("ok") is False and bm.get("day") == today) and can_call():
         data, st = fmp("batch-quote", symbols=",".join(symbols[:MAX_QUOTES]))
         rows = [x for x in (fmp_row(r) for r in data if isinstance(r, dict)) if x] if isinstance(data, list) else []
         QUOTE_DONE = True
@@ -312,15 +342,14 @@ def fetch_quotes(symbols, meta, now, et):
         print(f"  batch quote not available (HTTP {st}); using single quotes")
     n = 0
     for s in symbols:
-        ce = q.get(s)
-        if ce and (now - parse_iso(ce["t"])).total_seconds() < META_TTL_H * 3600:
-            continue
-        if n >= SINGLE_QUOTES or spare() < 1:
+        if n >= SINGLE_QUOTES or not can_call():
             break
         n += 1
+        QUOTE_DONE = True
         data, st = fmp("quote", symbol=s)
         row = fmp_row(data[0]) if isinstance(data, list) and data and isinstance(data[0], dict) else None
         if row:
+            out[s] = row
             q[s] = cache_entry(row, now)
     return out
 
@@ -336,27 +365,31 @@ def norm_site(w):
     return ("https://" + m.group(1).split("://", 1)[1].lower() + (m.group(2) or "")) if m else None
 
 
-def needs_profile(e, now):
+def needs_profile(e, now, want_mc=False):
     if not e:
         return True
     age = (now - parse_iso(e["t"])).days
+    if want_mc and not e.get("mc") and age >= 1:
+        return True
     return age >= (PROFILE_TTL_DAYS if e.get("w") else PROFILE_RETRY_DAYS)
 
 
+def importance_key(rows):
+    """Sort key: stocks on the most rankings first, then the best rank."""
+    def key(sym):
+        r = rows[sym]
+        return (-sum(k in r for k in ("gr", "ar", "m")), min(r.get("gr", 999), r.get("ar", 999), r.get("br", 999)))
+    return key
+
+
 def fetch_profiles(rows, meta, now, et):
-    """Look up the website of the most important tickers that are not cached yet, as far as the request budget allows."""
+    """Look up website and market cap of the most important tickers that are not cached yet, as far as the request budget allows."""
     today = et.date().isoformat()
     if meta.get("profile_dead") == today:
         return
     prof = read(STATE / "profiles.json", {})
     prof = {s: e for s, e in prof.items() if (now - parse_iso(e["t"])).days < 365}
-
-    def importance(sym):
-        r = rows[sym]
-        lists = sum(k in r for k in ("gr", "ar", "m"))
-        return (-lists, min(r.get("gr", 999), r.get("ar", 999), r.get("br", 999)))
-
-    todo = [s for s in sorted(rows, key=importance) if needs_profile(prof.get(s), now)][:PROFILES_PER_RUN]
+    todo = [s for s in sorted(rows, key=importance_key(rows)) if needs_profile(prof.get(s), now, rows[s].get("mc") is None)][:PROFILES_PER_RUN]
     for sym in todo:
         if spare() < 1:
             break
@@ -367,7 +400,8 @@ def fetch_profiles(rows, meta, now, et):
             break
         if isinstance(data, list):
             row = data[0] if data and isinstance(data[0], dict) else {}
-            prof[sym] = {"w": norm_site(row.get("website")), "t": iso(now)}
+            mc = num(row.get("marketCap"))
+            prof[sym] = {k: v for k, v in {"w": norm_site(row.get("website")), "mc": int(mc) if mc and mc > 0 else None, "t": iso(now)}.items() if v is not None or k == "w"}
     write(STATE / "profiles.json", prof)
 
 
@@ -387,25 +421,54 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
     for i, r in enumerate(a_rows or [], 1):
         merge(r, ar=i)
 
-    # Reddit tickers: the ones the lists do not already cover get a price check so the filters can run on them
-    lookups = [b["sym"] for b in (buzz or [])[:BUZZ_LOOKUP] if b["sym"] not in rows]
-    quotes = fetch_quotes(lookups, meta, now, et) if lookups else {}
+    # volume + market cap for everything from ONE screener call; stocks missing from a complete screener fail the filters
+    uni, complete = fetch_universe(meta, et)
+    for sym, d in rows.items():
+        u = uni.get(sym)
+        if u:
+            for k in ("v", "mc"):
+                if u.get(k) is not None:
+                    d[k] = u[k]
+            for k in ("n", "x"):
+                if not d.get(k) and u.get(k):
+                    d[k] = u[k]
+    if complete and any(sym in uni for sym in rows):
+        for sym in [sym for sym in rows if sym not in uni]:
+            del rows[sym]
+
+    # Reddit tickers the lists do not cover: from the screener if possible, otherwise from quotes
+    pending = []
+    for b in buzz or []:
+        if b["sym"] in rows:
+            continue
+        if b["sym"] in uni:
+            merge(uni[b["sym"]])
+        elif not (uni and complete):
+            pending.append(b["sym"])
+    pending = pending[:BUZZ_LOOKUP]
+    need = [sym for sym in sorted(rows, key=importance_key(rows)) if rows[sym].get("v") is None or rows[sym].get("mc") is None]
+    fresh = fetch_quotes(need + [sym for sym in pending if sym not in need], meta, now, et) if (need or pending) else {}
+    for sym, qr in fresh.items():
+        if sym in rows:
+            for k in ("p", "c", "v", "mc"):
+                if rows[sym].get(k) is None and qr.get(k) is not None:
+                    rows[sym][k] = qr[k]
     cache = meta.get("q", {})
     cached_price = {}
+    for sym in pending:
+        if sym in rows:
+            continue
+        if sym in fresh:
+            merge(fresh[sym])
+        elif sym in cache and (now - parse_iso(cache[sym]["t"])).total_seconds() < META_TTL_H * 3600:
+            merge({"sym": sym, "n": cache[sym].get("n"), "x": cache[sym].get("x"), "mc": cache[sym].get("mc")})
+            cached_price[sym] = cache[sym].get("p")
     for i, b in enumerate(buzz or [], 1):
-        sym = b["sym"]
-        if sym not in rows:
-            if sym in quotes:
-                merge(quotes[sym])
-            elif sym in cache and (now - parse_iso(cache[sym]["t"])).total_seconds() < META_TTL_H * 3600:
-                merge({"sym": sym, "n": cache[sym].get("n"), "x": cache[sym].get("x"), "mc": cache[sym].get("mc")})
-                cached_price[sym] = cache[sym].get("p")
-            else:
-                continue                      # no price information, so the filters cannot run: leave it out
-        d = rows[sym]
-        d["m"], d["m24"], d["br"] = b["m"], b["m24"], i
-        if not d.get("n") and b.get("n"):
-            d["n"] = b["n"][:60]
+        d = rows.get(b["sym"])
+        if d is not None:
+            d["m"], d["m24"], d["br"] = b["m"], b["m24"], i
+            if not d.get("n") and b.get("n"):
+                d["n"] = b["n"][:60]
 
     kept = {s: d for s, d in rows.items() if passes(d, d.get("p") if d.get("p") is not None else cached_price.get(s))}
     for key in ("gr", "ar", "br"):                           # ranks among the stocks that passed the filters
@@ -413,10 +476,12 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
         for i, s in enumerate(order, 1):
             kept[s][key] = i
     for d in kept.values():
-        d.pop("mc", None)
-        for k in ("p", "c", "v"):
+        for k in ("p", "c"):
             if k in d:
                 d[k] = round(d[k], 4)
+        for k in ("v", "mc"):
+            if k in d:
+                d[k] = int(d[k])
     fp = hashlib.md5(json.dumps(sorted((s, d.get("p"), d.get("c"), d.get("v")) for s, d in kept.items() if "gr" in d or "ar" in d)).encode()).hexdigest()[:12]
     bp = hashlib.md5(json.dumps(sorted((s, d.get("m")) for s, d in kept.items() if "m" in d)).encode()).hexdigest()[:12]
     return {"t": iso(now), "ses": ses or "closed", "ok": {"g": int(bool(g_rows)), "a": int(bool(a_rows)), "b": int(bool(buzz))},
@@ -503,9 +568,22 @@ def build_board():
     scored = [(parse_iso(s["t"]), s, snapshot_scores(s)) for s in snaps]
 
     last_seen = {}                                            # newest snapshot each ticker appeared in
+    appear = {}                                               # every snapshot time each ticker appeared in
     for t, s, _ in scored:
         for sym, r in s["rows"].items():
             last_seen[sym] = (t, r)
+            appear.setdefault(sym, []).append(t)
+    why_cache = read(STATE / "why.json", {})
+    gap = timedelta(minutes=INTERVAL * 2.5)
+
+    def trending_since(times):
+        """When the current run of appearances began (a gap of more than 2.5 intervals starts a new run)."""
+        start = prev = times[-1]
+        for t in reversed(times[:-1]):
+            if prev - t > gap:
+                break
+            start = prev = t
+        return start
 
     table = {}
     for w in wins:
@@ -533,9 +611,11 @@ def build_board():
         if not any((v or 0) > 0 for arr in per.values() for v in arr[:4]):
             continue
         t, r = last_seen[sym]
-        dv = r["p"] * r["v"] if r.get("p") and r.get("v") else None
-        st = {"n": r.get("n"), "x": r.get("x"), "p": r.get("p"), "c": r.get("c"), "dv": round(dv) if dv else None,
-              "ar": r.get("ar"), "m": r.get("m"), "m24": r.get("m24"), "t": iso(t), "web": (profiles.get(sym) or {}).get("w"), "s": per}
+        pf = profiles.get(sym) or {}
+        wy = why_cache.get(sym) or {}
+        st = {"n": r.get("n"), "x": r.get("x"), "p": r.get("p"), "c": r.get("c"), "v": r.get("v"), "mc": r.get("mc") or pf.get("mc"),
+              "m": r.get("m"), "m24": r.get("m24"), "since": iso(trending_since(appear[sym])), "web": pf.get("w"),
+              "why": wy.get("d"), "why_t": wy.get("t") if wy.get("d") else None, "s": per}
         board["stocks"][sym] = {k: v for k, v in st.items() if v is not None}
     write(DATA / "board.json", board)
     return board
@@ -575,6 +655,10 @@ def run():
         snap = build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et)
         QUOTE_DONE = True
         fetch_profiles(snap["rows"], meta, now, et)
+        try:
+            why.update(snap["rows"], now, STATE, importance_key(snap["rows"]))
+        except Exception as e:                      # a failed "why trending" step must never lose the snapshot
+            print(f"  why-trending step failed ({type(e).__name__}); continuing")
         files = snap_files()
         prev = read(files[-1], None) if files else None
         if prev and prev.get("fp") == snap["fp"] and prev.get("bp") == snap["bp"]:
@@ -608,14 +692,18 @@ def check():
     if not FMP_KEY:
         print("Set the FMP_Key environment variable first.")
         return 1
-    print("Checking the APIs (5 FMP requests)...")
+    print("Checking the APIs (6 FMP requests)...")
     for name, path, params in [("biggest-gainers", "biggest-gainers", {}), ("most-actives", "most-actives", {}),
-                               ("batch-quote", "batch-quote", {"symbols": "AAPL,MSFT"}), ("quote", "quote", {"symbol": "AAPL"}), ("profile", "profile", {"symbol": "AAPL"})]:
+                               ("batch-quote", "batch-quote", {"symbols": "AAPL,MSFT"}), ("quote", "quote", {"symbol": "AAPL"}), ("profile", "profile", {"symbol": "AAPL"}),
+                               ("company-screener", "company-screener", {"marketCapMoreThan": int(MIN_MCAP), "priceMoreThan": MIN_PRICE, "volumeMoreThan": MIN_SHARE_VOL, "isActivelyTrading": "true", "isEtf": "false", "isFund": "false", "limit": 5})]:
         data, st = fmp(path, **params)
         if isinstance(data, list) and data and isinstance(data[0], dict):
             print(f"  {name}: HTTP {st}, {len(data)} rows, fields: {', '.join(sorted(data[0]))}")
         else:
             print(f"  {name}: HTTP {st}, {str(data)[:150] if data is not None else 'no data'}")
+    items = why.headlines("AAPL", "Apple", datetime.now(timezone.utc))
+    print(f"  headlines (Yahoo/Google News RSS): {len(items)} found" + (f", newest: {items[0][0][:70]}" if items else ""))
+    print("  GEMINI_KEY: " + ("set" if os.environ.get("GEMINI_KEY", "").strip() else "NOT set (no 'why trending' lines)"))
     data, st = get_json(APE_URL.format(flt=BUZZ_FILTER, page=1), tries=1)
     res = data.get("results") if isinstance(data, dict) else None
     if res:
@@ -639,7 +727,7 @@ def demo():
              "IONQ": "IonQ", "SOUN": "SoundHound AI", "LCID": "Lucid Group", "CCL": "Carnival", "PFE": "Pfizer",
              "NFLX": "Netflix", "DIS": "Walt Disney", "BABA": "Alibaba Group", "TQQQ": "ProShares UltraPro QQQ", "SPY": "SPDR S&P 500 ETF"}
     st = {s: {"p": rnd.uniform(6, 600), "w": rnd.uniform(0.6, 2.2), "drift": rnd.uniform(-0.2, 0.25), "heat": rnd.random() ** 2 * 900,
-              "x": rnd.choice(["NASDAQ", "NYSE"])} for s in names}
+              "x": rnd.choice(["NASDAQ", "NYSE"]), "cap": 10 ** rnd.uniform(8.6, 12.4)} for s in names}
     times = []
     t = datetime.now(timezone.utc).replace(second=0, microsecond=0)
     t -= timedelta(minutes=t.minute % INTERVAL)
@@ -659,7 +747,7 @@ def demo():
             v["p"] = max(1.0, v["p"] * (1 + rnd.gauss(v["drift"] / 100, 0.25 * v["w"] / 10)))
             vol[s] += rnd.random() * 2.2e6 * v["w"] * (3 if session_of(et) == "reg" else 1)
             v["heat"] = max(5, v["heat"] * rnd.uniform(0.85, 1.2))
-        info = {s: {"n": names[s], "x": st[s]["x"], "p": round(st[s]["p"], 2), "c": round((st[s]["p"] / prev_close[s] - 1) * 100, 2), "v": int(vol[s])} for s in st}
+        info = {s: {"n": names[s], "x": st[s]["x"], "mc": int(st[s]["cap"]), "p": round(st[s]["p"], 2), "c": round((st[s]["p"] / prev_close[s] - 1) * 100, 2), "v": int(vol[s])} for s in st}
         gain = sorted(info, key=lambda s: -info[s]["c"])[:25]
         act = sorted(info, key=lambda s: -info[s]["p"] * info[s]["v"])[:25]
         buzz = sorted(st, key=lambda s: -st[s]["heat"])[:40]
@@ -677,6 +765,11 @@ def demo():
              "COIN": "coinbase.com", "INTC": "intel.com", "UBER": "uber.com", "SNAP": "snap.com", "F": "ford.com", "BAC": "bankofamerica.com",
              "RKLB": "rocketlabusa.com", "IONQ": "ionq.com", "PFE": "pfizer.com", "NFLX": "netflix.com", "BABA": "alibaba.com"}
     write(STATE / "profiles.json", {s: {"w": "https://www." + d, "t": iso(datetime.now(timezone.utc))} for s, d in sites.items()})
+    texts = ["Up on heavy volume after an analyst raised its price target, according to recent headlines.",
+             "Reportedly moving on news of a new partnership; the Reddit chatter is up sharply from yesterday.",
+             "No clear news found in the headlines; the move comes with unusually high trading volume.",
+             "Shares rose after quarterly results beat expectations, with sales ahead of forecasts."]
+    write(STATE / "why.json", {s: {"d": texts[i % len(texts)], "t": iso(datetime.now(timezone.utc) - timedelta(minutes=20 * (i % 9)))} for i, s in enumerate(list(names)[:24])})
     b = build_board()
     print(f"Demo data written to {DATA}/board.json ({len(b['stocks'])} stocks, {len(times)} snapshots). "
           f"Serve this folder and open index.html?data=demo_data")
