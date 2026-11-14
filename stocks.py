@@ -373,7 +373,9 @@ def fetch_yahoo(symbols, meta, now):
                 pre, post = num(q.get("preMarketPrice")), num(q.get("postMarketPrice"))
                 if state == "PRE" and pre:                                    # pre-market: change against the previous close
                     price, ext, ec, ech = pre, "pre", num(q.get("preMarketChangePercent")), num(q.get("preMarketChange"))
-                elif state in ("POST", "POSTPOST") and post:                  # after-hours: change against today's close
+                elif state in ("POST", "POSTPOST", "CLOSED", "PREPRE") and post and not (
+                        num(q.get("postMarketTime")) and num(q.get("regularMarketTime")) and num(q.get("postMarketTime")) < num(q.get("regularMarketTime"))):
+                    # after-hours, and also overnight / weekends / holidays: the last after-hours trade stays shown until pre-market trades begin
                     price, ext, ec, ech = post, "post", num(q.get("postMarketChangePercent")), num(q.get("postMarketChange"))
                 if ext and ec is not None:
                     chg = ec                                                  # c = the change the RANKING uses: the extended-hours one while there is one
@@ -666,6 +668,45 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
             "fp": fp, "bp": bp, "rows": kept}
 
 
+OFF_TOLERANCE = int(os.environ.get("OFF_BOARD_TOLERANCE", "2"))     # snapshots a stock may miss and still count as "never went off the board"
+
+
+def streak_step(streaks, rows, t):
+    """One snapshot: a stock that is on the board keeps its start time; one that misses more than OFF_TOLERANCE snapshots in a row is
+    dropped, so it starts a new run when it comes back. Snapshots only exist while the market session is open, so nights, weekends
+    and holidays never break a run."""
+    for sym in list(streaks):
+        if sym not in rows:
+            streaks[sym]["m"] = streaks[sym].get("m", 0) + 1
+            if streaks[sym]["m"] > OFF_TOLERANCE:
+                del streaks[sym]
+    for sym in rows:
+        if sym in streaks:
+            streaks[sym]["m"] = 0
+        else:
+            streaks[sym] = {"s": iso(t), "m": 0}
+    return streaks
+
+
+def update_streaks(rows, now):
+    streaks = read(STATE / "trending.json", None)
+    if streaks is None:                                          # first run with this feature: rebuild the runs from the saved snapshots
+        streaks = replay_streaks()
+    else:
+        streak_step(streaks, rows, now)
+    write(STATE / "trending.json", streaks)
+    return streaks
+
+
+def replay_streaks():
+    streaks = {}
+    for f in snap_files():
+        sn = read(f, None)
+        if sn:
+            streak_step(streaks, sn["rows"], parse_iso(sn["t"]))
+    return streaks
+
+
 def snap_files():
     return sorted((STATE / "snaps").glob("*.json"))
 
@@ -752,6 +793,9 @@ def build_board():
             last_seen[sym] = (t, r)
             appear.setdefault(sym, []).append(t)
     why_cache = read(STATE / "why.json", {})
+    streaks = read(STATE / "trending.json", None)
+    if streaks is None:
+        streaks = replay_streaks()
     gap = timedelta(minutes=INTERVAL * 2.5)
 
     def trending_since(times):
@@ -792,7 +836,7 @@ def build_board():
         pf = profiles.get(sym) or {}
         wy = why_cache.get(sym) or {}
         st = {"n": r.get("n"), "x": r.get("x"), "p": r.get("p"), "c": r.get("c"), "rc": r.get("rc"), "ec": r.get("ec"), "rch": r.get("rch"), "ech": r.get("ech"), "rp": r.get("rp"), "ext": r.get("ext"), "v": r.get("v"), "mc": r.get("mc") or pf.get("mc"),
-              "m": r.get("m"), "m24": r.get("m24"), "since": iso(trending_since(appear[sym])), "web": pf.get("w"),
+              "m": r.get("m"), "m24": r.get("m24"), "since": (streaks.get(sym) or {}).get("s") or iso(trending_since(appear[sym])), "web": pf.get("w"),
               "why": wy.get("d"), "why_t": wy.get("t") if wy.get("d") else None, "s": per}
         board["stocks"][sym] = {k: v for k, v in st.items() if v is not None}
     write(DATA / "board.json", board)
@@ -843,6 +887,7 @@ def run():
             print("Prices and buzz are unchanged since the last snapshot (market data not updating); nothing saved.")
         else:
             write(STATE / "snaps" / (now.strftime("%Y%m%dT%H%M%SZ") + ".json"), snap)
+            update_streaks(snap["rows"], now)
             n = len(snap["rows"])
             print(f"Snapshot {snap['t']} [{snap['ses']}]: {n} stocks "
                   f"(gainers {sum('gr' in r for r in snap['rows'].values())}, active {sum('ar' in r for r in snap['rows'].values())}, "
