@@ -3,7 +3,8 @@
 Same pattern as TrendingTopics: at most ONE Gemini call per run (all stocks that need a line go in one batch), the model
 chain gemini-3.5-flash-lite -> gemini-3.1-flash-lite -> gemini-2.5-flash-lite, and the secret is named GEMINI_KEY.
 
-A stock is only sent to Gemini when it has no description yet or its description is WHY_TTL_HOURS (4) hours old.
+By default EVERY stock on the board gets a fresh line on EVERY run (WHY_TTL_HOURS=0), all in that one call. Set WHY_TTL_HOURS=4 to
+go back to asking only for stocks that have no line yet or a line that is 4 hours old.
 Headlines come from Yahoo Finance's ticker RSS feed, with Google News as the fallback. Neither needs a key.
 Descriptions live in state/why.json and are copied into data/board.json by stocks.py.
 """
@@ -14,6 +15,7 @@ import os
 import re
 import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -22,8 +24,9 @@ from urllib.parse import quote_plus
 import requests
 
 GEMINI_MODELS = ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite")
-WHY_TTL_HOURS = float(os.environ.get("WHY_TTL_HOURS", "4"))            # ask again only after this long
-WHY_MAX = int(os.environ.get("WHY_MAX_PER_RUN", "25"))                 # stocks per Gemini call
+WHY_TTL_HOURS = float(os.environ.get("WHY_TTL_HOURS", "0"))            # 0 = rewrite every line on every run; 4 = only lines that are 4 hours old
+WHY_MAX = int(os.environ.get("WHY_MAX_PER_RUN", "100"))                # stocks per Gemini call (most important first)
+NEWS_WORKERS = int(os.environ.get("NEWS_WORKERS", "6"))                # headline feeds fetched in parallel
 NEWS_PER_STOCK = int(os.environ.get("NEWS_PER_STOCK", "5"))
 NEWS_MAX_AGE_H = 72
 KEEP_DAYS = 7
@@ -174,7 +177,7 @@ def _parse(raw):
 
 def _call_model(model, prompt, key):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"}}
+    body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json", "maxOutputTokens": 16384}}
     headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
     for attempt in range(3):
         try:
@@ -229,6 +232,8 @@ def _shorten(text, n=300):
 
 # ---------- the entry point ----------
 def stale(entry, now):
+    if WHY_TTL_HOURS <= 0:
+        return True
     return not entry or not entry.get("d") or (now - _parse_iso(entry["t"])).total_seconds() >= WHY_TTL_HOURS * 3600
 
 
@@ -245,12 +250,14 @@ def update(rows, now, state_dir, order=None):
             print("  GEMINI_KEY not set - no 'why trending' lines.")
         _write(path, cache)
         return cache
-    entries = []
-    for i, s in enumerate(targets, 1):
-        row = rows[s]
-        news = headlines(s, row.get("n"), now)
-        entries.append({"id": i, "sym": s, "name": row.get("n") or s, "material": _material(s, row, news, now)})
-        time.sleep(0.3)
+    def gather(sym):
+        time.sleep(0.15)                                           # be polite to the feeds
+        return headlines(sym, rows[sym].get("n"), now)
+
+    with ThreadPoolExecutor(max_workers=max(1, NEWS_WORKERS)) as pool:
+        news_by_sym = list(pool.map(gather, targets))
+    entries = [{"id": i, "sym": s, "name": rows[s].get("n") or s, "material": _material(s, rows[s], news, now)}
+               for i, (s, news) in enumerate(zip(targets, news_by_sym), 1)]
     print(f"Asking Gemini once: a 'why trending' line for {len(entries)} stock(s) "
           f"({sum('none found' not in e['material'] for e in entries)} with headlines)...")
     result, model = _gemini(_prompt(entries))

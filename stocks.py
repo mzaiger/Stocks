@@ -185,8 +185,10 @@ def runs_after(et):
 
 
 def windows_for(i):
-    """15 -> 15/30/60/240/720/1440, 60 -> 60/120/240/720/1440."""
-    return sorted({x for x in (i, 2 * i, 60, 240, 720, 1440) if x >= i})
+    """Time frames (minutes) the board is built for. Default: only the latest snapshot ("right now").
+    BOARD_WINDOWS=60,240,1440 adds longer frames; the page then shows time frame buttons again."""
+    extra = {int(x) for x in os.environ.get("BOARD_WINDOWS", "").replace(" ", "").split(",") if x.isdigit() and int(x) >= i}
+    return sorted({i} | extra)
 
 
 # ---------- HTTP and the FMP request budget ----------
@@ -364,6 +366,7 @@ def fetch_yahoo(symbols, meta, now):
                     continue
                 mc = num(q.get("marketCap"))
                 price, chg, ext = num(q.get("regularMarketPrice")), num(q.get("regularMarketChangePercent")), None
+                rp = price                                                      # regular-session price (shown next to the pre-market / after-hours price)
                 rc, ec = chg, None                                              # rc = regular-session change, ec = pre-market / after-hours change (as Yahoo shows them)
                 state = str(q.get("marketState") or "").upper()
                 pre, post = num(q.get("preMarketPrice")), num(q.get("postMarketPrice"))
@@ -377,7 +380,7 @@ def fetch_yahoo(symbols, meta, now):
                     chg = (post / prev - 1) * 100 if prev else (chg or 0) + (ec or 0)
                 out[sym] = {"sym": sym, "n": (str(q.get("longName") or q.get("shortName") or "").strip()[:60] or None),
                             "x": (str(q.get("fullExchangeName") or q.get("exchange") or "").strip() or None),
-                            "p": price, "c": chg, "v": num(q.get("regularMarketVolume")), "mc": mc if mc and mc > 0 else None, "ext": ext, "rc": rc, "ec": ec}
+                            "p": price, "c": chg, "v": num(q.get("regularMarketVolume")), "mc": mc if mc and mc > 0 else None, "ext": ext, "rc": rc, "ec": ec, "rp": rp if ext else None}
     except Exception as e:                                                    # network, TLS, JSON or shape problems: all mean "not available"
         ym["fail_t"] = iso(now)
         print(f"  Yahoo batch quote not available ({type(e).__name__}{': ' + str(e)[:60] if isinstance(e, ValueError) else ''})")
@@ -518,7 +521,7 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
 
     def merge(r, **extra):
         d = rows.setdefault(r["sym"], {})
-        for k in ("n", "x", "p", "c", "v", "mc", "rc", "ec"):
+        for k in ("n", "x", "p", "c", "v", "mc", "rc", "ec", "rp"):
             if r.get(k) is not None:
                 d[k] = r[k]
         if r.get("ext"):
@@ -537,13 +540,13 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
 
     def fill(sym, src, override=()):
         d = stats.setdefault(sym, {"sym": sym})
-        for k in ("n", "x", "p", "c", "v", "mc", "ext", "rc", "ec"):
+        for k in ("n", "x", "p", "c", "v", "mc", "ext", "rc", "ec", "rp"):
             if src.get(k) is not None and (d.get(k) is None or k in override):
                 d[k] = src[k]
 
     if not complete:                                              # 2) Yahoo batch quote: every ticker in one request
         for sym, y in fetch_yahoo(all_syms, meta, now).items():
-            fill(sym, y, override=("p", "c", "v", "mc", "ext", "rc", "ec"))
+            fill(sym, y, override=("p", "c", "v", "mc", "ext", "rc", "ec", "rp"))
 
     def has(sym, k):
         return (rows.get(sym) or {}).get(k) is not None or (stats.get(sym) or {}).get(k) is not None
@@ -557,7 +560,7 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
         if u:
             if u.get("ext") and u.get("p") is not None:               # pre-market / after-hours price replaces the (regular-hours) list price
                 d["p"], d["ext"] = u["p"], u["ext"]
-                for k in ("c", "rc", "ec"):
+                for k in ("c", "rc", "ec", "rp"):
                     if u.get(k) is not None:
                         d[k] = u[k]
             for k in ("v", "mc"):
@@ -587,7 +590,7 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
         if (stats.get(sym) or {}).get("p") is not None:
             merge(stats[sym])
         elif recent and (prow.get(sym) or {}).get("p") is not None:     # no fresh numbers this time: keep the last known ones
-            merge({"sym": sym, **{k: prow[sym].get(k) for k in ("n", "x", "p", "c", "v", "mc", "ext", "rc", "ec")}})
+            merge({"sym": sym, **{k: prow[sym].get(k) for k in ("n", "x", "p", "c", "v", "mc", "ext", "rc", "ec", "rp")}})
         elif not (uni and complete) and not (miss.get(sym) and (now - parse_iso(miss[sym])).total_seconds() < 86400):
             pending.append(sym)
     pending = pending[:BUZZ_LOOKUP]
@@ -599,7 +602,7 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
         if recent:
             if d.get("p") is None and old.get("p") is not None and old.get("ext"):
                 d["ext"] = old["ext"]
-                for k in ("rc", "ec"):
+                for k in ("rc", "ec", "rp"):
                     if d.get(k) is None and old.get(k) is not None:
                         d[k] = old[k]
             for k in ("p", "c", "v"):
@@ -643,7 +646,7 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
     for d in kept.values():
         if d.get("rc") is None and d.get("c") is not None and not d.get("ext"):
             d["rc"] = d["c"]                                         # in the regular session the regular change IS the change
-        for k in ("p", "c", "rc", "ec"):
+        for k in ("p", "c", "rc", "ec", "rp"):
             if d.get(k) is not None:
                 d[k] = round(d[k], 4)
         for k in ("v", "mc"):
@@ -660,7 +663,7 @@ def snap_files():
 
 
 def prune(latest_t):
-    keep_from = latest_t - timedelta(minutes=max(windows_for(INTERVAL)) + 120)
+    keep_from = latest_t - timedelta(minutes=max(max(windows_for(INTERVAL)), 1440) + 120)     # a day of history for "trending since"
     for f in snap_files():
         s = read(f, None)
         if not s or parse_iso(s["t"]) < keep_from:
@@ -780,7 +783,7 @@ def build_board():
         t, r = last_seen[sym]
         pf = profiles.get(sym) or {}
         wy = why_cache.get(sym) or {}
-        st = {"n": r.get("n"), "x": r.get("x"), "p": r.get("p"), "c": r.get("c"), "rc": r.get("rc"), "ec": r.get("ec"), "ext": r.get("ext"), "v": r.get("v"), "mc": r.get("mc") or pf.get("mc"),
+        st = {"n": r.get("n"), "x": r.get("x"), "p": r.get("p"), "c": r.get("c"), "rc": r.get("rc"), "ec": r.get("ec"), "rp": r.get("rp"), "ext": r.get("ext"), "v": r.get("v"), "mc": r.get("mc") or pf.get("mc"),
               "m": r.get("m"), "m24": r.get("m24"), "since": iso(trending_since(appear[sym])), "web": pf.get("w"),
               "why": wy.get("d"), "why_t": wy.get("t") if wy.get("d") else None, "s": per}
         board["stocks"][sym] = {k: v for k, v in st.items() if v is not None}
@@ -928,6 +931,7 @@ def demo():
             for s_ in info:
                 info[s_]["rc"] = round(info[s_]["c"] * 0.6, 2)
                 info[s_]["ec"] = round(info[s_]["c"] * 0.4, 2)
+                info[s_]["rp"] = round(info[s_]["p"] / (1 + info[s_]["ec"] / 100), 2)
         gain = sorted(info, key=lambda s: -info[s]["c"])[:25]
         act = sorted(info, key=lambda s: -info[s]["p"] * info[s]["v"])[:25]
         buzz = sorted(st, key=lambda s: -st[s]["heat"])[:40]

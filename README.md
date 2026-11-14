@@ -24,13 +24,13 @@ Add them under **Settings > Secrets and variables > Actions**. ApeWisdom, Yahoo 
 
 | File | What it is |
 |---|---|
-| `index.html` | The page: tabs, time frames, favorites, stock tiles |
+| `index.html` | The page: tabs, Newest / Ranking sort, favorites, stock tiles |
 | `stocks.py` | Does the work. `run` (one snapshot), `rebuild` (board from saved snapshots, no key), `check` (test the APIs), `demo` (fake data for previewing) |
 | `why.py` | Fetches recent headlines and makes the one Gemini call per run that writes the "why is it trending" lines |
 | `.github/workflows/stocks.yml` | Runs on a `repository_dispatch` event (`trigger-stocks-pull`) or manually; no cron schedule. Exits by itself when the market session is closed |
 | `apps-script/Code.gs` | The Google Apps Script timer that sends the event. Paste it into script.google.com |
-| `data/board.json` | What the page reads: every stock's scores for every time frame, rebuilt on each run |
-| `state/snaps/*.json` | One small file per snapshot, kept for the longest time frame plus 2 hours, then deleted |
+| `data/board.json` | What the page reads: every stock on the latest snapshot with its numbers and scores, rebuilt on each run |
+| `state/snaps/*.json` | One small file per snapshot, kept for about a day (for "trending since"), then deleted |
 | `state/usage.json` | FMP requests spent today |
 | `state/meta.json` | Cached quote info, and which optional FMP endpoints the plan does not allow today |
 | `state/profiles.json` | Company website and market cap from FMP's company profile, remembered for 30 days (14 days if a company had no website) |
@@ -76,11 +76,11 @@ Notes:
 | ApeWisdom | 1 | 64 | none stated |
 | Yahoo quotes | 3 (cookie, crumb, batch quote) plus up to 60 one-by-one lookups only for stocks the batch missed | about 200 to 5,000 | not published; about 2,000 per hour per IP is reported |
 | Yahoo / Google News headlines | 1 or 2 per stock that needs a "why trending" line (at most 25) | a few hundred | none stated |
-| **Gemini** | **At most 1 call, and only if some stock has no line or a 4-hour-old line** | **at most 64, usually 40 to 60** | free tier is reported at about 500 per day and 10 per minute for the flash-lite models; Google shows the real figures in AI Studio |
+| **Gemini** | **1 call per run, rewriting the line for every stock on the board** | **64** | free tier is reported at about 500 per day and 10 per minute for the flash-lite models; Google shows the real figures in AI Studio |
 | GitHub Actions | 1 run | 64 | unlimited for public repos |
 | Google Apps Script | 1 call | 64 | well inside its quotas |
 
-Gemini only goes over the limit if a model is unavailable: the chain `3.5 -> 3.1 -> 2.5 flash-lite` then makes up to 3 attempts for that run. Each call carries at most `WHY_MAX_PER_RUN` (25) stocks, so a call is about 9,000 input tokens. To cut calls, raise `WHY_TTL_HOURS`; to cut the size of a call, lower `WHY_MAX_PER_RUN`.
+Gemini only goes over the limit if a model is unavailable: the chain `3.5 -> 3.1 -> 2.5 flash-lite` then makes up to 3 attempts for that run. A call carries at most `WHY_MAX_PER_RUN` (100) stocks, roughly 20,000 to 30,000 input tokens. To cut calls, set `WHY_TTL_HOURS=4` (only stocks with no line or a 4-hour-old line are sent); to cut the size of a call, lower `WHY_MAX_PER_RUN`. The headline feeds are fetched 6 at a time (`NEWS_WORKERS`), about 100 to 200 small requests per run.
 
 ## When it runs
 
@@ -115,24 +115,20 @@ Yahoo is an unofficial feed that can change or block cloud IPs without notice; a
 
 ### Changing the interval
 
-Change `INTERVAL_MIN` in the workflow **and** the trigger's interval on the Apps Script Triggers page to the same value. The page builds its time frame buttons from the interval:
+Change `INTERVAL_MIN` in the workflow **and** the trigger's interval on the Apps Script Triggers page to the same value (5, 10, 15 or 30 minutes, or hourly).
 
-| Interval | Time frames | Apps Script trigger |
-|---|---|---|
-| 15 | 15 min, 30 min, 1 h, 4 h, 12 h, 24 h | every 15 minutes |
-| 30 | 30 min, 1 h, 4 h, 12 h, 24 h | every 30 minutes |
-| 60 | 1 h, 2 h, 4 h, 12 h, 24 h | every hour |
+The page shows the latest snapshot only, so there are no time frame buttons by default. To bring them back, set `BOARD_WINDOWS` in the workflow `env`, for example `BOARD_WINDOWS: "60,240,1440"`: the board then also averages the scores over the last 1, 4 and 24 hours (measured back from the latest snapshot), and the page shows one button per time frame.
 
 ## Scores
 
-Each snapshot scores every stock on the three axes, then the scores are **averaged over all snapshots in the time frame**. A stock only scores on a ranking if it is on that list, and a snapshot where it is on none of the lists counts as 0, so a stock that stays on the lists beats one that spiked once.
+Each snapshot scores every stock on the three axes. A stock only scores on a ranking if it is on that list. (If you turn on extra time frames with `BOARD_WINDOWS`, the scores are averaged over all snapshots in the frame, and a snapshot where the stock is on none of the lists counts as 0, so a stock that stays on the lists beats one that spiked once.)
 
 * **Gainers:** `100 x ln(1 + change%) / ln(51)` for stocks on the top-gainers list, so +5% is about 45, +10% about 61, +20% about 77, +50% or more is 100.
 * **Most Active:** dollars traded on a log scale, $1M = 0 and $10B = 100, for stocks on the most-active list. If volume is missing from the list, its rank on the list is used instead.
 * **Buzz:** `100 x ln(1 + mentions) / ln(1 + mentions of the most-mentioned stock)` from ApeWisdom's 24-hour mention count. The Buzz chip also shows the change from the 24 hours before.
-* **All:** the average of the three scores, **only if the stock is on at least 2 of the 3 rankings** (a score above 0 on at least two tabs) in that time frame. A stock on 3 of 3 beats one on 2 of 3 with similar scores because the missing one counts as 0.
+* **All:** the average of the three scores, **only if the stock is on at least 2 of the 3 rankings** (a score above 0 on at least two tabs). A stock on 3 of 3 beats one on 2 of 3 with similar scores because the missing one counts as 0.
 
-**Time frames** are measured back from the latest snapshot (not from the clock), so on a weekend the 24-hour tab still shows the last trading day. After a weekend or overnight, the longer frames hold fewer snapshots; the tile says how many. The 12 and 24 hour frames are wall-clock hours, and the market session is only 16 of them.
+**Time frames** exist only if you set `BOARD_WINDOWS` (see above); they are measured back from the latest snapshot (not from the clock), so on a weekend the 24-hour frame still shows the last trading day.
 
 ## Filters (so small stocks do not ruin the board)
 
@@ -155,26 +151,26 @@ Reddit tickers get their price, change, volume and market cap from the screener 
 
 Each tile, top to bottom:
 
-1. **Rank and favorite:** the rank in the current tab and time frame (top right) and the favorite star (top left).
+1. **Rank and favorite:** the rank in the current tab (top right) and the favorite star (top left).
 2. **Company icon:** the favicon of the company's website when the FMP profile has one (requested at 128 px and shown large), otherwise FMP's logo for the ticker, otherwise the ticker letters. Favicons are often small, so some look soft.
-3. **Ticker and price:** the ticker links to Yahoo Finance. In pre-market and after-hours the price is tagged **Pre** or **AH**.
+3. **Ticker and price:** the ticker links to Yahoo Finance. The price is the regular-session price (the last close until the open); in pre-market and after-hours the **Pre** or **AH** price is shown under it.
 4. **Company name and market cap**, for example "Robinhood Markets · $210B".
 5. **Why it is trending:** the Gemini line (see below), if there is one yet.
-6. **Three boxes:** **Chg** (the regular-session change; in pre-market and after-hours the extended-hours change is shown on a second line, e.g. `Pre +4.00%`), **Volume** (shares traded today, for example 52.3M) and **Buzz** (Reddit mentions in 24 hours with the change from the day before side by side, for example 21K ▲11%). Under each is the stock's rank on that tab in the current time frame, or "—" if it is not on that ranking.
+6. **Three boxes:** **Chg** (the regular-session change; in pre-market and after-hours the extended-hours change is shown on a second line, e.g. `Pre +4.00%`), **Volume** (shares traded today, for example 52.3M) and **Buzz** (Reddit mentions in 24 hours with the change from the day before side by side, for example 21K ▲11%). Under each, on a line level across the three boxes, is the stock's rank on that tab (large and dark), or "—" if it is not on that ranking.
 7. **How long it has been trending:** for example "35m ago", "3h 5m ago" (same wording as the other boards). It counts from the first of the stock's current run of snapshots; a gap of more than 2.5 intervals starts a new run, and it cannot reach back further than the snapshots kept (about a day). Hover for the date and time. It updates every 30 seconds without reloading.
 8. **Links at the bottom:** the company website (only if known), Yahoo Finance, TradingView, StockTwits and Reddit ($TICKER search).
 
-The scores still decide the order of the tabs, but they are no longer shown on the tiles.
+The scores still decide the order of the tabs, but they are .
 
-Also: the four tabs, one row of time frame buttons built from the interval in `board.json`, and **★ Favorites** (starred stocks are saved in your browser; ones not on the lists right now show greyed out). No sorting buttons; the order is the rank. The page reloads the data every 5 minutes, and `?data=demo_data` loads the demo folder instead of `data/`.
+Also: the four tabs; **Sort: Newest / Ranking** (Newest puts the stocks that started trending most recently first, the same "35m ago" shown on each tile; Ranking orders by the tab's score; the choice is remembered); and **★ Favorites** (starred stocks are saved in your browser; ones not on the lists right now show greyed out). The page reloads the data every 5 minutes, and `?data=demo_data` loads the demo folder instead of `data/`.
 
 ## Why is it trending (Gemini)
 
 Copied from the TrendingTopics approach. `why.py`:
 
-1. After each snapshot, finds the stocks in it that have **no description yet or a description that is 4 hours old** (`WHY_TTL_HOURS`). Everything else is left alone, so a stock is asked about at most every 4 hours.
+1. After each snapshot, takes **every stock in it** (`WHY_TTL_HOURS` is 0 by default: lines are rewritten on every run). Set `WHY_TTL_HOURS=4` to ask only for stocks with no line yet or a 4-hour-old line.
 2. Fetches up to 5 recent headlines per such stock from Yahoo Finance's ticker feed (Google News as the fallback; no key needed).
-3. Sends all of them, with the stock's numbers (change, volume, market cap, which rankings, Reddit mentions), in **one Gemini call per run** (at most `WHY_MAX_PER_RUN` = 25 stocks, most important first) and asks for one or two short sentences. The model chain is `gemini-3.5-flash-lite`, then `gemini-3.1-flash-lite`, then `gemini-2.5-flash-lite`, tried in that order when a model is unavailable.
+3. Sends all of them, with the stock's numbers (change, volume, market cap, which rankings, Reddit mentions), in **one Gemini call per run** (at most `WHY_MAX_PER_RUN` = 100 stocks, most important first) and asks for one or two short sentences. The model chain is `gemini-3.5-flash-lite`, then `gemini-3.1-flash-lite`, then `gemini-2.5-flash-lite`, tried in that order when a model is unavailable.
 4. The prompt tells the model to use only the material it is given, to say so plainly when the headlines do not explain the move, and not to predict or advise. Nothing is written back if Gemini fails; the old line stays and the stock is asked about again on the next run.
 
 Lines are stored in `state/why.json` for 7 days and copied into `data/board.json`. Without `GEMINI_KEY` the tiles just have no line. A line is only as good as the headlines found, so some will honestly say that no clear news was found.
