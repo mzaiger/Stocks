@@ -115,7 +115,7 @@ def _material(sym, row, news, now):
         bits.append(f"volume {_compact(row['v'])} shares")
     if row.get("mc"):
         bits.append(f"market cap ${_compact(row['mc'])}")
-    lists = [n for k, n in (("gr", "top gainers"), ("ar", "most active"), ("m", "most discussed on Reddit")) if k in row]
+    lists = [n for k, n in (("gr", "top gainers"), ("lr", "top losers"), ("ar", "most active"), ("m", "most discussed on Reddit")) if k in row]
     if lists:
         bits.append("on the " + " and ".join(lists) + " list" + ("s" if len(lists) > 1 else ""))
     if row.get("m"):

@@ -5,9 +5,10 @@ A static stock board in the same style as Movie Board. It ranks stocks by three 
 | Tab | Like (Movies) | Score (0 to 100) | Source |
 |---|---|---|---|
 | **Gainers** | Rotten Tomatoes | Price gain since the previous close, for stocks on FMP's top-gainers list | FMP |
+| **Losers** | (none) | Price drop since the previous close, for stocks on FMP's top-losers list | FMP |
 | **Most Active** | IMDb | Dollars traded (price x volume), for stocks on FMP's most-active list | FMP |
 | **Buzz** | Box Office | Reddit mentions in the last 24 hours | ApeWisdom |
-| **All** | All | The three scores averaged evenly, **only for stocks on at least 2 of the 3 rankings** | |
+| **All** | All | The price-move score (Gainers or Losers, whichever applies), Most Active and Buzz averaged evenly, **only for stocks on at least 2 of the 4 rankings** | |
 
 A Google Apps Script timer (the same pattern as SlickDealsTracker) triggers a GitHub Actions workflow every 15 minutes while the market session is open; the workflow takes a snapshot and commits it as JSON. `index.html` (GitHub Pages) reads `data/board.json`.
 
@@ -15,7 +16,7 @@ A Google Apps Script timer (the same pattern as SlickDealsTracker) triggers a Gi
 
 | Secret name | Service | Used for |
 |---|---|---|
-| `FMP_Key` | [Financial Modeling Prep](https://site.financialmodelingprep.com/developer) (free plan, 250 requests/day) | Biggest gainers, most actives, company websites (profile); the screener and batch quote only if your plan allows them |
+| `FMP_Key` | [Financial Modeling Prep](https://site.financialmodelingprep.com/developer) (free plan, 250 requests/day) | Biggest gainers, biggest losers, most actives, company websites (profile); the screener and batch quote only if your plan allows them |
 | `GEMINI_KEY` | Google Gemini (the same secret name TrendingTopics and SportsDashboard use) | The "why is it trending" line on each tile. Optional: without it the tiles simply have no line |
 
 Add them under **Settings > Secrets and variables > Actions**. ApeWisdom, Yahoo Finance (quotes and headlines) and Google News need no key. Locally, set environment variables with the same names.
@@ -73,7 +74,7 @@ Notes:
 
 | Service | Requests per run | Per day (64 runs) | Limit |
 |---|---|---|---|
-| FMP | 2 (gainers, actives) plus up to 4 profile lookups and a few single quotes if the budget allows | 128 plus the optional ones, capped by the script | 250 per day |
+| FMP | 3 (gainers, losers, actives) plus up to 4 profile lookups and a few single quotes if the budget allows | 192 plus the optional ones, capped by the script | 250 per day |
 | ApeWisdom | 1 | 64 | none stated |
 | Yahoo quotes | 3 (cookie, crumb, batch quote) plus up to 60 one-by-one lookups only for stocks the batch missed | about 200 to 5,000 | not published; about 2,000 per hour per IP is reported |
 | Yahoo / Google News headlines | 1 or 2 per stock that needs a "why trending" line (at most 25) | a few hundred | none stated |
@@ -93,16 +94,17 @@ Gemini only goes over the limit if a model is unavailable: the chain `3.5 -> 3.1
 
 ## Rate limits (FMP free: 250 requests per day)
 
-Each run uses 3 requests: gainers (1), most actives (1) and one **screener** call (1) that returns volume and market cap for every stock that passes the filters. Gemini and the headline feeds do not use FMP requests.
+Each run uses 3 requests: gainers (1), losers (1) and most actives (1). If your plan allows it, a fourth **screener** call returns volume and market cap for every stock that passes the filters; on the free plan the screener is refused (HTTP 402), so it is tried once a day and then skipped. Gemini and the headline feeds do not use FMP requests.
 
 | Interval | Runs per day (16 hours) | Requests per day | Fits in 250? |
 |---|---|---|---|
-| 15 min | 64 | 192 | Yes, about 40 spare |
-| 30 min | 32 | 96 | Yes |
-| 1 hour | 16 | 48 | Yes |
-| 10 min | 96 | 288 | No |
+| 15 min | 64 | 193 (192 plus the daily screener probe) | Yes, about 37 left after the 20-request margin |
+| 30 min | 32 | 97 | Yes |
+| 1 hour | 16 | 49 | Yes |
+| 20 min | 48 | 145 | Yes, about 85 spare |
+| 10 min | 96 | 289 | No |
 
-15 minutes is the fastest interval that fits. The script protects the limit itself: it counts requests per Eastern day in `state/usage.json` and keeps back 3 requests for every run still to come today plus a margin of 20. **Only what is left over is spent on the optional calls**: company profile lookups (up to 4 per run, most important stocks first: on the most rankings, then best rank) and single quotes. At 15 minutes that leaves roughly 35 optional calls a day; websites and market caps are remembered for 30 days, so the cache fills within a few days.
+15 minutes is the fastest interval that fits. The script protects the limit itself: it counts requests per Eastern day in `state/usage.json` and keeps back 3 requests (4 if the screener works on your plan) for every run still to come today plus a margin of 20. **Only what is left over is spent on the optional calls**: company profile lookups (up to 4 per run, most important stocks first: on the most rankings, then best rank) and single quotes. At 15 minutes that leaves roughly 35 optional calls a day; websites and market caps are remembered for 30 days, so the cache fills within a few days.
 
 **Where the numbers on a tile come from.** Every stock on the board, including Reddit-only ones, needs price, change, volume and market cap. FMP's free plan blocks the screener and the batch quote (HTTP 402) and its most-active list has no volume, so each run tries these in order and fills in whatever is still missing:
 
@@ -125,9 +127,10 @@ The page shows the latest snapshot only, so there are no time frame buttons by d
 Each snapshot scores every stock on the three axes. A stock only scores on a ranking if it is on that list. (If you turn on extra time frames with `BOARD_WINDOWS`, the scores are averaged over all snapshots in the frame, and a snapshot where the stock is on none of the lists counts as 0, so a stock that stays on the lists beats one that spiked once.)
 
 * **Gainers:** `100 x ln(1 + change%) / ln(51)` for stocks on the top-gainers list, so +5% is about 45, +10% about 61, +20% about 77, +50% or more is 100.
+* **Losers:** the same formula on the size of the drop, for stocks on the top-losers list: -5% is about 45, -10% about 61, -50% or worse is 100. A stock is a gainer or a loser, never both in one snapshot.
 * **Most Active:** dollars traded on a log scale, $1M = 0 and $10B = 100, for stocks on the most-active list. If volume is missing from the list, its rank on the list is used instead.
 * **Buzz:** `100 x ln(1 + mentions) / ln(1 + mentions of the most-mentioned stock)` from ApeWisdom's 24-hour mention count. The Buzz chip also shows the change from the 24 hours before.
-* **All:** the average of the three scores, **only if the stock is on at least 2 of the 3 rankings** (a score above 0 on at least two tabs). A stock on 3 of 3 beats one on 2 of 3 with similar scores because the missing one counts as 0.
+* **All:** the average of three scores (price move, Most Active, Buzz), **only if the stock is on at least 2 of the 4 rankings** (a score above 0 on at least two tabs). The price-move score is the Gainers score for a gainer and the Losers score for a loser, so a stock is not held back by the one of the two lists it can never be on. A stock on all three beats one on two with similar scores because the missing one counts as 0.
 
 **Time frames** exist only if you set `BOARD_WINDOWS` (see above); they are measured back from the latest snapshot (not from the clock), so on a weekend the 24-hour frame still shows the last trading day.
 
@@ -163,7 +166,7 @@ Each tile, top to bottom:
 
 The scores still decide the order of the tabs, but they are .
 
-Also: the four tabs; **Sort: Newest / Ranking** (Newest puts the stocks that started trending most recently first, the same "35m ago" shown on each tile; Ranking orders by the tab's score; the choice is remembered); and **★ Favorites** (starred stocks are saved in your browser; ones not on the lists right now show greyed out). The page reloads the data every 5 minutes, and `?data=demo_data` loads the demo folder instead of `data/`.
+Also: the five tabs (All, Gainers, Losers, Most Active, Buzz); **Sort: Newest / Ranking** (Newest puts the stocks that started trending most recently first, the same "35m ago" shown on each tile; Ranking orders by the tab's score; the choice is remembered); and **★ Favorites** (starred stocks are saved in your browser; ones not on the lists right now show greyed out). The page reloads the data every 5 minutes, and `?data=demo_data` loads the demo folder instead of `data/`.
 
 ## Why is it trending (Gemini)
 

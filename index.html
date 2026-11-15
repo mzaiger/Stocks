@@ -87,11 +87,11 @@
 <body>
 <header>
   <div class="eyebrow-row">
-    <p class="eyebrow">Stock Board · Gainers · Most Active · Buzz</p>
+    <p class="eyebrow">Stock Board · Gainers · Losers · Most Active · Buzz</p>
     <div class="updated-row"><span id="lastUpdated">Last updated: —</span><button class="refresh-btn" id="refreshBtn" type="button">Refresh</button></div>
   </div>
   <h1>Stock Board</h1>
-  <p class="sub">Stocks that are moving, heavily traded and talked about, from the latest snapshot (taken every 15 minutes on business days, pre-market through after-hours). <b>Gainers</b> are the biggest gains, <b>Most Active</b> the heaviest trading, <b>Buzz</b> the most Reddit mentions. The <b>All</b> tab only lists stocks that are on <b>at least 2 of the 3 rankings</b>. Sort by <b>Newest</b> (stocks that started trending most recently, shown as “35m ago” on each tile) or by <b>Ranking</b>. Each tile has a short AI summary of why the stock is trending, rewritten on every update from recent headlines. Star a stock to keep it handy. Small and penny stocks are filtered out.</p>
+  <p class="sub">Stocks that are moving, heavily traded and talked about, from the latest snapshot (taken every 15 minutes on business days, pre-market through after-hours). <b>Gainers</b> are the biggest gains, <b>Losers</b> the biggest drops, <b>Most Active</b> the heaviest trading, <b>Buzz</b> the most Reddit mentions. The <b>All</b> tab only lists stocks that are on <b>at least 2 of the 4 rankings</b>. Sort by <b>Newest</b> (stocks that started trending most recently, shown as “35m ago” on each tile) or by <b>Ranking</b>. Each tile has a short AI summary of why the stock is trending, rewritten on every update from recent headlines. Star a stock to keep it handy. Small and penny stocks are filtered out.</p>
 </header>
 <main>
   <div class="controls">
@@ -111,10 +111,11 @@
 </main>
 <script>
 const TABS = [
-  { k: 'all',  l: 'All',         i: 3, short: 'average score, stocks on at least 2 of the 3 rankings', hint: 'Average of the Gainers, Most Active and Buzz scores, weighted evenly. A stock must be on at least 2 of the 3 rankings' },
+  { k: 'all',  l: 'All',         i: 4, short: 'average score, stocks on at least 2 of the 4 rankings', hint: 'Average of the price-move (Gainers or Losers), Most Active and Buzz scores, weighted evenly. A stock must be on at least 2 of the 4 rankings' },
   { k: 'gain', l: 'Gainers',     i: 0, short: 'price gain', hint: 'Price gain since the previous close, for stocks on the top-gainers list (100 = up 50% or more)' },
-  { k: 'act',  l: 'Most Active', i: 1, short: 'dollars traded', hint: 'Dollars traded, for stocks on the most-active list ($1M = 0, $10B = 100)' },
-  { k: 'buzz', l: 'Buzz',        i: 2, short: 'Reddit mentions', hint: 'Reddit mentions in the last 24 hours, relative to the most-mentioned stock' },
+  { k: 'loss', l: 'Losers',      i: 1, short: 'price drop', hint: 'Price drop since the previous close, for stocks on the top-losers list (100 = down 50% or more)' },
+  { k: 'act',  l: 'Most Active', i: 2, short: 'dollars traded', hint: 'Dollars traded, for stocks on the most-active list ($1M = 0, $10B = 100)' },
+  { k: 'buzz', l: 'Buzz',        i: 3, short: 'Reddit mentions', hint: 'Reddit mentions in the last 24 hours, relative to the most-mentioned stock' },
 ];
 const SESSIONS = { pre: 'Pre-market', reg: 'Market open', post: 'After-hours', closed: 'Market closed' };
 const DIR = (() => { const d = new URLSearchParams(location.search).get('data'); return d && /^[\w-]+$/.test(d) ? d : 'data'; })();
@@ -208,9 +209,9 @@ function cardHtml(sym, st, sc, rank, tabDef, ranks) {
       <p class="name" title="${st.x ? esc(st.x) : ''}">${esc(st.n || '')}${st.mc ? ` · ${money(st.mc)}` : ''}</p>
       ${st.why ? `<p class="why" title="${st.why_t ? 'Written ' + esc(agoText(st.why_t)) : ''}">${esc(st.why)}</p>` : ''}
       <div class="chips">
-        <div class="chip" title="The change used for the ranking${st.ext === 'pre' ? ': the pre-market change (against the previous close)' : st.ext === 'post' ? ': the after-hours change (against today\'s close)' : ': the change since the previous close'}"><small>${st.ext ? extName + ' chg' : 'Chg'}</small><span class="val ${cls(st.c)}">${st.c == null ? '—' : sign(st.c)}</span>${rk(0, 'Gainers')}</div>
-        <div class="chip" title="Shares traded today"><small>Volume</small><span class="val">${shares(st.v)}</span>${rk(1, 'Most Active')}</div>
-        <div class="chip" title="Reddit mentions in the last 24 hours, and the change from the 24 hours before"><small>Buzz</small><span class="val">${count(st.m)}${surge ? `<span class="pct ${surge[0] === '▲' ? 'up' : surge[0] === '▼' ? 'down' : ''}">${surge}</span>` : ''}</span>${rk(2, 'Buzz')}</div>
+        <div class="chip" title="The change used for the ranking${st.ext === 'pre' ? ': the pre-market change (against the previous close)' : st.ext === 'post' ? ': the after-hours change (against today\'s close)' : ': the change since the previous close'}"><small>${st.ext ? extName + ' chg' : 'Chg'}</small><span class="val ${cls(st.c)}">${st.c == null ? '—' : sign(st.c)}</span>${ranks[0].get(sym) || !ranks[1].get(sym) ? rk(0, 'Gainers') : rk(1, 'Losers')}</div>
+        <div class="chip" title="Shares traded today"><small>Volume</small><span class="val">${shares(st.v)}</span>${rk(2, 'Most Active')}</div>
+        <div class="chip" title="Reddit mentions in the last 24 hours, and the change from the 24 hours before"><small>Buzz</small><span class="val">${count(st.m)}${surge ? `<span class="pct ${surge[0] === '▲' ? 'up' : surge[0] === '▼' ? 'down' : ''}">${surge}</span>` : ''}</span>${rk(3, 'Buzz')}</div>
       </div>
       ${st.since ? `<p class="when" title="Trending since ${esc(whenText(st.since))}"><span class="ago" data-t="${esc(st.since)}">${esc(agoText(st.since))}</span></p>` : ''}
       <div class="links" style="grid-template-columns:repeat(${links.length},minmax(0,1fr))">${links.join('')}</div>
@@ -228,9 +229,9 @@ function render() {
   const key = String(win);
   const all = Object.entries(board.stocks).map(([sym, st]) => ({ sym, st, sc: st.s[key] || null }));
   let list = all.filter(x => x.sc && x.sc[tabDef.i] != null && x.sc[tabDef.i] > 0)
-    .sort((a, b) => b.sc[tabDef.i] - a.sc[tabDef.i] || (b.sc[3] || 0) - (a.sc[3] || 0) || a.sym.localeCompare(b.sym));
+    .sort((a, b) => b.sc[tabDef.i] - a.sc[tabDef.i] || (b.sc[4] || 0) - (a.sc[4] || 0) || a.sym.localeCompare(b.sym));
   list.forEach((x, i) => { x.rank = i + 1; });
-  const ranks = [0, 1, 2].map(i => new Map(all.filter(x => x.sc && (x.sc[i] || 0) > 0).sort((a, b) => b.sc[i] - a.sc[i] || a.sym.localeCompare(b.sym)).map((x, j) => [x.sym, j + 1])));
+  const ranks = [0, 1, 2, 3].map(i => new Map(all.filter(x => x.sc && (x.sc[i] || 0) > 0).sort((a, b) => b.sc[i] - a.sc[i] || a.sym.localeCompare(b.sym)).map((x, j) => [x.sym, j + 1])));
   const n = list.length;
   const bySince = (a, b) => (b.st.since || '').localeCompare(a.st.since || '') || (a.rank || 1e9) - (b.rank || 1e9) || a.sym.localeCompare(b.sym);
   const byRank = (a, b) => (a.rank || 1e9) - (b.rank || 1e9) || a.sym.localeCompare(b.sym);

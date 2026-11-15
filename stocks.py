@@ -3,10 +3,10 @@
 
     python stocks.py run       take one snapshot (only inside the market session) and rebuild data/board.json
     python stocks.py rebuild   rebuild data/board.json from the saved snapshots (no API calls, no key needed)
-    python stocks.py check     call each API once and print what came back (uses 6 FMP requests)
+    python stocks.py check     call each API once and print what came back (uses 7 FMP requests)
     python stocks.py demo      write fake snapshots + board into demo_data/ (open index.html?data=demo_data)
 
-FMP (secret FMP_Key): biggest gainers, most actives, company websites (profile), and when the plan allows it a screener / batch quote.
+FMP (secret FMP_Key): biggest gainers, biggest losers, most actives, company websites (profile), and when the plan allows it a screener / batch quote.
 Yahoo Finance (no key, unofficial): one batch quote per run for volume, market cap and change.
 Gemini (secret GEMINI_KEY, see why.py): a short 'why is it trending' line per stock, from recent headlines.
 ApeWisdom (no key): Reddit mention counts.
@@ -68,7 +68,7 @@ FMP_BASE = "https://financialmodelingprep.com/stable"
 APE_URL = "https://apewisdom.io/api/v1.0/filter/{flt}/page/{page}"
 SYM_RE = re.compile(r"^[A-Z]{1,6}(-[A-Z]{1,2})?$")
 USAGE = {"date": "", "fmp": 0}
-RESERVE_AFTER = 0          # FMP requests kept back for the rest of today's runs (3 each: gainers, actives, quote)
+RESERVE_AFTER = 0          # FMP requests kept back for the rest of today's runs (see run_cost)
 QUOTE_DONE = False         # this run's own quote call has been made (or is not needed)
 
 
@@ -182,6 +182,13 @@ def session_of(et):
 def runs_after(et):
     left = hm(SESSION_END) - (et.hour * 60 + et.minute)
     return max(0, left // INTERVAL)
+
+
+def run_cost(meta, et):
+    """FMP requests every run needs: gainers, losers and most-actives (3), plus the screener slot (1) unless the plan was refused it today."""
+    sm = (meta or {}).get("screener") or {}
+    blocked = sm.get("ok") is False and sm.get("day") == et.date().isoformat()
+    return 3 + (0 if blocked else 1)
 
 
 def windows_for(i):
@@ -489,7 +496,7 @@ def importance_key(rows):
     """Sort key: stocks on the most rankings first, then the best rank."""
     def key(sym):
         r = rows[sym]
-        return (-sum(k in r for k in ("gr", "ar", "m")), min(r.get("gr", 999), r.get("ar", 999), r.get("br", 999)))
+        return (-sum(k in r for k in ("gr", "lr", "ar", "m")), min(r.get("gr", 999), r.get("lr", 999), r.get("ar", 999), r.get("br", 999)))
     return key
 
 
@@ -517,7 +524,7 @@ def fetch_profiles(rows, meta, now, et):
 
 
 # ---------- one snapshot ----------
-def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
+def build_snapshot(now, ses, g_rows, l_rows, a_rows, buzz, meta, et):
     rows = {}
 
     def merge(r, **extra):
@@ -531,6 +538,8 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
 
     for i, r in enumerate(g_rows or [], 1):
         merge(r, gr=i)
+    for i, r in enumerate(l_rows or [], 1):
+        merge(r, lr=i)
     for i, r in enumerate(a_rows or [], 1):
         merge(r, ar=i)
 
@@ -640,7 +649,7 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
                 d["n"] = b["n"][:60]
 
     kept = {s: d for s, d in rows.items() if passes(d, d.get("p") if d.get("p") is not None else cached_price.get(s))}
-    for key in ("gr", "ar", "br"):                           # ranks among the stocks that passed the filters
+    for key in ("gr", "lr", "ar", "br"):                           # ranks among the stocks that passed the filters
         order = sorted((s for s, d in kept.items() if key in d), key=lambda s: kept[s][key])
         for i, s in enumerate(order, 1):
             kept[s][key] = i
@@ -662,9 +671,9 @@ def build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et):
         for k in ("v", "mc"):
             if k in d:
                 d[k] = int(d[k])
-    fp = hashlib.md5(json.dumps(sorted((s, d.get("p"), d.get("c"), d.get("v")) for s, d in kept.items() if "gr" in d or "ar" in d)).encode()).hexdigest()[:12]
+    fp = hashlib.md5(json.dumps(sorted((s, d.get("p"), d.get("c"), d.get("v")) for s, d in kept.items() if "gr" in d or "lr" in d or "ar" in d)).encode()).hexdigest()[:12]
     bp = hashlib.md5(json.dumps(sorted((s, d.get("m")) for s, d in kept.items() if "m" in d)).encode()).hexdigest()[:12]
-    return {"t": iso(now), "ses": ses or "closed", "ok": {"g": int(bool(g_rows)), "a": int(bool(a_rows)), "b": int(bool(buzz))},
+    return {"t": iso(now), "ses": ses or "closed", "ok": {"g": int(bool(g_rows)), "l": int(bool(l_rows)), "a": int(bool(a_rows)), "b": int(bool(buzz))},
             "fp": fp, "bp": bp, "rows": kept}
 
 
@@ -726,6 +735,12 @@ def gain_score(c):
     return 0.0 if c <= 0 else min(100.0, 100 * math.log1p(c) / math.log1p(50))      # +50% or more = 100
 
 
+def loss_score(c):
+    if c is None:
+        return None
+    return 0.0 if c >= 0 else min(100.0, 100 * math.log1p(-c) / math.log1p(50))     # -50% or worse = 100
+
+
 def vol_score(dollars):
     return max(0.0, min(1.0, (math.log10(max(dollars, 1)) - 6) / 4)) * 100          # $1M = 0, $10B = 100
 
@@ -746,6 +761,10 @@ def snapshot_scores(s):
             g = None
         else:
             g = gain_score(r.get("c")) if "gr" in r else 0.0                 # only stocks on the gainers list score here
+        if not ok.get("l"):                                                  # snapshots from before Losers existed have no "l"
+            l = None
+        else:
+            l = loss_score(r.get("c")) if "lr" in r else 0.0                 # only stocks on the losers list score here
         if not ok["a"]:
             a = None
         elif "ar" not in r:
@@ -760,7 +779,7 @@ def snapshot_scores(s):
             b = 0.0
         else:
             b = 100 * math.log1p(r["m"]) / math.log1p(max_m)
-        out[sym] = (g, a, b)
+        out[sym] = (g, l, a, b)
     return out
 
 
@@ -782,7 +801,7 @@ def build_board():
     latest = snaps[-1]
     latest_t = parse_iso(latest["t"])
     board["asof"], board["session"] = latest["t"], latest["ses"]
-    board["sources"] = {"g": bool(latest["ok"]["g"]), "a": bool(latest["ok"]["a"]), "b": bool(latest["ok"]["b"])}
+    board["sources"] = {"g": bool(latest["ok"]["g"]), "l": bool(latest["ok"].get("l")), "a": bool(latest["ok"]["a"]), "b": bool(latest["ok"]["b"])}
     profiles = read(STATE / "profiles.json", {})
     scored = [(parse_iso(s["t"]), s, snapshot_scores(s)) for s in snaps]
 
@@ -814,23 +833,25 @@ def build_board():
         board["snaps"][str(w)] = len(part)
         syms = {sym for _, s, _ in part for sym in s["rows"]}
         for sym in syms:
-            gs, as_, bs, seen = [], [], [], 0
+            gs, ls, as_, bs, seen = [], [], [], [], 0
             for _, s, sc in part:
                 if sym in s["rows"]:
-                    g, a, b = sc[sym]
+                    g, l, a, b = sc[sym]
                     seen += 1
                 else:                                         # not on any list in this snapshot = not a mover
                     ok = s["ok"]
-                    g, a, b = (0.0 if ok["g"] else None), (0.0 if ok["a"] else None), (0.0 if ok["b"] else None)
-                gs.append(g); as_.append(a); bs.append(b)
-            g, a, b = mean(gs), mean(as_), mean(bs)
-            have = [x for x in (g, a, b) if x is not None]
-            on = sum(1 for x in (g, a, b) if x)                      # rankings (tabs) the stock is on in this time frame
-            allv = sum(have) / len(have) if len(have) >= 2 and on >= 2 else None     # All needs 2 of the 3 rankings
-            table.setdefault(sym, {})[str(w)] = [None if x is None else round(x, 1) for x in (g, a, b, allv)] + [seen]
+                    g, l, a, b = (0.0 if ok["g"] else None), (0.0 if ok.get("l") else None), (0.0 if ok["a"] else None), (0.0 if ok["b"] else None)
+                gs.append(g); ls.append(l); as_.append(a); bs.append(b)
+            g, l, a, b = mean(gs), mean(ls), mean(as_), mean(bs)
+            mv = [x for x in (g, l) if x is not None]
+            mover = max(mv) if mv else None                          # a stock is a gainer or a loser, never both: the better of the two is its price-move score
+            have = [x for x in (mover, a, b) if x is not None]
+            on = sum(1 for x in (g, l, a, b) if x)                   # rankings (tabs) the stock is on in this time frame
+            allv = sum(have) / len(have) if len(have) >= 2 and on >= 2 else None     # All needs 2 of the 4 rankings
+            table.setdefault(sym, {})[str(w)] = [None if x is None else round(x, 1) for x in (g, l, a, b, allv)] + [seen]
 
     for sym, per in table.items():
-        if not any((v or 0) > 0 for arr in per.values() for v in arr[:4]):
+        if not any((v or 0) > 0 for arr in per.values() for v in arr[:5]):
             continue
         t, r = last_seen[sym]
         pf = profiles.get(sym) or {}
@@ -857,25 +878,27 @@ def run():
         print("FMP_Key is not set. Add it as a GitHub secret named FMP_Key.")
         return 1
     load_usage(et)
-    if USAGE["fmp"] + 2 > FMP_LIMIT:
+    if USAGE["fmp"] + 3 > FMP_LIMIT:
         print(f"FMP budget used up for today ({USAGE['fmp']}/{FMP_LIMIT}).")
         return 0
     if not force and USAGE["last"] and (now - parse_iso(USAGE["last"])).total_seconds() < INTERVAL * 0.4 * 60:
         print("The last run was less than 40% of an interval ago (a duplicate trigger?): skipping to protect the FMP limit.")
         return 0
     USAGE["last"] = iso(now)
-    RESERVE_AFTER = 3 * runs_after(et)
     QUOTE_DONE = False
     meta = read(STATE / "meta.json", {})
+    RESERVE_AFTER = run_cost(meta, et) * runs_after(et)
     try:
         g_rows = fmp_list("biggest-gainers")
+        l_rows = fmp_list("biggest-losers")
         a_rows = fmp_list("most-actives")
-        if not g_rows and not a_rows:
-            print("Both FMP lists failed; no snapshot saved.")
+        if not g_rows and not l_rows and not a_rows:
+            print("All three FMP lists failed; no snapshot saved.")
             return 1
         buzz = fetch_buzz()
-        snap = build_snapshot(now, ses, g_rows, a_rows, buzz, meta, et)
+        snap = build_snapshot(now, ses, g_rows, l_rows, a_rows, buzz, meta, et)
         QUOTE_DONE = True
+        RESERVE_AFTER = run_cost(meta, et) * runs_after(et)         # the screener may have been refused during this run
         fetch_profiles(snap["rows"], meta, now, et)
         try:
             why.update(snap["rows"], now, STATE, importance_key(snap["rows"]))
@@ -890,7 +913,7 @@ def run():
             update_streaks(snap["rows"], now)
             n = len(snap["rows"])
             print(f"Snapshot {snap['t']} [{snap['ses']}]: {n} stocks "
-                  f"(gainers {sum('gr' in r for r in snap['rows'].values())}, active {sum('ar' in r for r in snap['rows'].values())}, "
+                  f"(gainers {sum('gr' in r for r in snap['rows'].values())}, losers {sum('lr' in r for r in snap['rows'].values())}, active {sum('ar' in r for r in snap['rows'].values())}, "
                   f"buzz {sum('m' in r for r in snap['rows'].values())})")
         prune(now)
         build_board()
@@ -918,8 +941,8 @@ def check():
     if not FMP_KEY:
         print("Set the FMP_Key environment variable first.")
         return 1
-    print("Checking the APIs (6 FMP requests)...")
-    for name, path, params in [("biggest-gainers", "biggest-gainers", {}), ("most-actives", "most-actives", {}),
+    print("Checking the APIs (7 FMP requests)...")
+    for name, path, params in [("biggest-gainers", "biggest-gainers", {}), ("biggest-losers", "biggest-losers", {}), ("most-actives", "most-actives", {}),
                                ("batch-quote", "batch-quote", {"symbols": "AAPL,MSFT"}), ("quote", "quote", {"symbol": "AAPL"}), ("profile", "profile", {"symbol": "AAPL"}),
                                ("company-screener", "company-screener", {"marketCapMoreThan": int(MIN_MCAP), "priceMoreThan": MIN_PRICE, "volumeMoreThan": MIN_SHARE_VOL, "isActivelyTrading": "true", "isEtf": "false", "isFund": "false", "limit": 5})]:
         data, st = fmp(path, **params)
@@ -986,18 +1009,20 @@ def demo():
                 info[s_]["ec"] = round(info[s_]["c"] * 0.4, 2)
                 info[s_]["rp"] = round(info[s_]["p"] / (1 + info[s_]["ec"] / 100), 2)
                 info[s_]["c"] = info[s_]["ec"]                      # the ranking change is the extended-hours one
-        gain = sorted(info, key=lambda s: -info[s]["c"])[:25]
+        gain = [s for s in sorted(info, key=lambda s: -info[s]["c"]) if info[s]["c"] > 0][:25]
+        lose = [s for s in sorted(info, key=lambda s: info[s]["c"]) if info[s]["c"] < 0][:25]
         act = sorted(info, key=lambda s: -info[s]["p"] * info[s]["v"])[:25]
         buzz = sorted(st, key=lambda s: -st[s]["heat"])[:40]
         rows = {}
-        for s in set(gain) | set(act) | set(buzz):
+        for s in set(gain) | set(lose) | set(act) | set(buzz):
             rows[s] = dict(info[s])
             if s in gain: rows[s]["gr"] = gain.index(s) + 1
+            if s in lose: rows[s]["lr"] = lose.index(s) + 1
             if s in act: rows[s]["ar"] = act.index(s) + 1
             if s in buzz:
                 rows[s].update(m=int(st[s]["heat"]), m24=int(st[s]["heat"] * rnd.uniform(0.6, 1.3)), br=buzz.index(s) + 1)
         write(STATE / "snaps" / (t.strftime("%Y%m%dT%H%M%SZ") + ".json"),
-              {"t": iso(t), "ses": session_of(et), "ok": {"g": 1, "a": 1, "b": 1}, "fp": "", "bp": "", "rows": rows})
+              {"t": iso(t), "ses": session_of(et), "ok": {"g": 1, "l": 1, "a": 1, "b": 1}, "fp": "", "bp": "", "rows": rows})
     sites = {"NVDA": "nvidia.com", "TSLA": "tesla.com", "AAPL": "apple.com", "AMD": "amd.com", "PLTR": "palantir.com", "SOFI": "sofi.com",
              "RIVN": "rivian.com", "AMZN": "amazon.com", "META": "meta.com", "MSFT": "microsoft.com", "GME": "gamestop.com", "HOOD": "robinhood.com",
              "COIN": "coinbase.com", "INTC": "intel.com", "UBER": "uber.com", "SNAP": "snap.com", "F": "ford.com", "BAC": "bankofamerica.com",
