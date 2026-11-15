@@ -157,7 +157,7 @@ Each tile, top to bottom:
 
 1. **Rank and favorite:** the rank in the current tab (top right) and the favorite star (top left).
 2. **Company icon:** the favicon of the company's website when the FMP profile has one (requested at 128 px and shown large), otherwise FMP's logo for the ticker, otherwise the ticker letters. Favicons are often small, so some look soft.
-3. **Ticker, then the price block:** the ticker links to Yahoo Finance. Under it the regular-session price with its point change, percent change and an arrow ▲/▼; in pre-market and after-hours a second line with the **Pre** or **AH** price and its own change.
+3. **Ticker, then the price block:** the ticker links to Yahoo Finance and ends with a ↗ arrow, like the other links. Under it the regular-session price with its point change, percent change and an arrow ▲/▼; in pre-market and after-hours a second line with the **Pre** or **AH** price and its own change.
 4. **Company name and market cap**, for example "Robinhood Markets · $210B".
 5. **Why it is trending:** the Gemini line (see below), if there is one yet.
 6. **Three boxes:** **Chg** (the regular-session percent change that Gainers and Losers are ranked on; the pre-market / after-hours change is on the price line above), **Volume** (shares traded today, for example 52.3M) and **Buzz** (Reddit mentions in 24 hours with the change from the day before side by side, for example 21K ▲11%). Under each, on a line level across the three boxes, is the stock's rank on that tab (large and dark), or "—" if it is not on that ranking.
