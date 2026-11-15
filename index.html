@@ -197,6 +197,7 @@ function cardHtml(sym, st, sc, rank, tabDef, ranks) {
   const regPrice = hasExt ? st.rp : st.p, regPct = hasExt ? st.rc : (st.rc != null ? st.rc : st.c);
   const line = (px, d, pct, extra) => `<div class="pline${extra ? ' ext' : ''}" title="${extra ? extFull : (hasExt ? 'Regular-session price and change' + (st.ext === 'pre' ? ' (the last close)' : '') : 'Price and change since the previous close')}">${extra ? `<i>${extName}</i>` : ''}<span class="px">${usd(px)}</span>${pct == null ? '' : `<span class="dlt ${cls(pct)}">${d == null ? '' : pts(d) + ' '}${sign(pct)} ${arrow(pct)}</span>`}</div>`;
   const priceBox = `<div class="pricebox">${line(regPrice, st.rch, regPct, false)}${hasExt ? line(st.p, st.ech, st.ec, true) : ''}</div>`;
+  const chg = st.rc != null ? st.rc : st.c;
   const rk = (i, what) => `<span class="rk" title="Rank on the ${what} tab">${ranks[i].get(sym) ? '#' + ranks[i].get(sym) : '—'}</span>`;
   return `<article class="card${sc ? '' : ' ghost'}">
     <div class="thumb-wrap"><img src="${esc(imgSrc)}" data-next="${esc(imgNext)}" data-sym="${esc(sym.slice(0, 4))}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="logoErr(this)">
@@ -209,7 +210,7 @@ function cardHtml(sym, st, sc, rank, tabDef, ranks) {
       <p class="name" title="${st.x ? esc(st.x) : ''}">${esc(st.n || '')}${st.mc ? ` · ${money(st.mc)}` : ''}</p>
       ${st.why ? `<p class="why" title="${st.why_t ? 'Written ' + esc(agoText(st.why_t)) : ''}">${esc(st.why)}</p>` : ''}
       <div class="chips">
-        <div class="chip" title="The change used for the ranking${st.ext === 'pre' ? ': the pre-market change (against the previous close)' : st.ext === 'post' ? ': the after-hours change (against today\'s close)' : ': the change since the previous close'}"><small>${st.ext ? extName + ' chg' : 'Chg'}</small><span class="val ${cls(st.c)}">${st.c == null ? '—' : sign(st.c)}</span>${ranks[0].get(sym) || !ranks[1].get(sym) ? rk(0, 'Gainers') : rk(1, 'Losers')}</div>
+        <div class="chip" title="The regular-session change, which Gainers and Losers are ranked on${st.ext ? ' (the ' + (st.ext === 'pre' ? 'pre-market' : 'after-hours') + ' change is on the price line)' : ''}"><small>Chg</small><span class="val ${cls(chg)}">${chg == null ? '—' : sign(chg)}</span>${ranks[0].get(sym) || !ranks[1].get(sym) ? rk(0, 'Gainers') : rk(1, 'Losers')}</div>
         <div class="chip" title="Shares traded today"><small>Volume</small><span class="val">${shares(st.v)}</span>${rk(2, 'Most Active')}</div>
         <div class="chip" title="Reddit mentions in the last 24 hours, and the change from the 24 hours before"><small>Buzz</small><span class="val">${count(st.m)}${surge ? `<span class="pct ${surge[0] === '▲' ? 'up' : surge[0] === '▼' ? 'down' : ''}">${surge}</span>` : ''}</span>${rk(3, 'Buzz')}</div>
       </div>

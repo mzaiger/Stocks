@@ -749,6 +749,11 @@ def rank_score(rank, n):
     return max(0.0, 100 * (1 - (rank - 1) / n))
 
 
+def move_pct(r):
+    """The change Gainers and Losers are scored on: the regular-session change, the same one FMP's lists are built from."""
+    return r["rc"] if r.get("rc") is not None else r.get("c")
+
+
 def snapshot_scores(s):
     rows, ok = s["rows"], s["ok"]
     with_rank = [r for r in rows.values() if "ar" in r]
@@ -760,11 +765,11 @@ def snapshot_scores(s):
         if not ok["g"]:
             g = None
         else:
-            g = gain_score(r.get("c")) if "gr" in r else 0.0                 # only stocks on the gainers list score here
+            g = gain_score(move_pct(r)) if "gr" in r else 0.0                 # only stocks on the gainers list score here
         if not ok.get("l"):                                                  # snapshots from before Losers existed have no "l"
             l = None
         else:
-            l = loss_score(r.get("c")) if "lr" in r else 0.0                 # only stocks on the losers list score here
+            l = loss_score(move_pct(r)) if "lr" in r else 0.0                 # only stocks on the losers list score here
         if not ok["a"]:
             a = None
         elif "ar" not in r:
