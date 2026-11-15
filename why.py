@@ -109,8 +109,15 @@ def _compact(v):
 
 def _material(sym, row, news, now):
     bits = []
-    if row.get("c") is not None:
-        bits.append(f"{'up' if row['c'] >= 0 else 'down'} {abs(row['c']):.1f}% today" + (f" at ${row['p']:.2f}" if row.get("p") else ""))
+    pct = lambda v: f"{'up' if v >= 0 else 'down'} {abs(v):.1f}%"
+    ext, rc, ec = row.get("ext"), row.get("rc"), row.get("ec")
+    if ext and rc is not None:                                     # pre-market / after-hours: give the regular-session move AND the extended-hours move
+        bits.append(f"regular session {pct(rc)}" + (f" to ${row['rp']:.2f}" if row.get("rp") else "") + (" (the last close)" if ext == "pre" else ""))
+        if ec is not None:
+            bits.append(f"{'pre-market' if ext == 'pre' else 'after-hours'} {pct(ec)}" + (f" at ${row['p']:.2f}" if row.get("p") else ""))
+    elif (rc if rc is not None else row.get("c")) is not None:
+        c = rc if rc is not None else row["c"]
+        bits.append(f"{pct(c)} today" + (f" at ${row['p']:.2f}" if row.get("p") else ""))
     if row.get("v"):
         bits.append(f"volume {_compact(row['v'])} shares")
     if row.get("mc"):
@@ -147,6 +154,8 @@ def _prompt(entries):
         "what happened in your own words. Do not copy headlines.\n"
         "- If the headlines do not explain it, say plainly that no clear news was found and describe the move from "
         "the figures, for example: \"Up 6% on heavy volume with no clear news in the headlines.\"\n"
+        "- If the figures give both a regular-session move and an after-hours or pre-market move, mention both briefly, "
+        "for example: \"Up 4% in the regular session but down 2% after hours.\"\n"
         "- If something is unconfirmed, say \"reportedly\".\n"
         "- No predictions and no advice: never say buy, sell, or that a price will rise or fall.\n"
         "- Do not mix up stocks: each answer must come from its own stock's material.\n"
