@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=0.8">
+<meta name="viewport" content="width=device-width, initial-scale=0.65">
 <title>Stock Board</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Ctext y=%27.9em%27 font-size=%2790%27%3E%F0%9F%93%88%3C/text%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -34,7 +34,9 @@
   .tabs.sources .tab-btn { font-size:14px; padding:8px 18px; }
   .timeframes { display:flex; flex-direction:column; align-items:stretch; gap:6px; max-width:100%; }
   @media (max-width:520px) { .tabs.sources .tab-btn { padding:8px 10px; font-size:13px; } #tabs .tab-btn { padding:7px 8px; font-size:12px; } }
-  .sortbox { display:flex; align-items:center; gap:8px; font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--text-dim); }
+  .sortbox { display:flex; align-items:center; justify-content:space-between; flex:1 1 auto; gap:8px 16px; font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--text-dim); }
+  .sgrp { display:flex; align-items:center; gap:8px; }
+  @media (max-width:700px) { .sortbox { flex-basis:100%; } }
   .count { font-family:'IBM Plex Mono',monospace; color:var(--text-dim); font-size:12px; margin:0 0 12px; line-height:1.5; }
   .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:14px; }
   .card { position:relative; display:flex; flex-direction:column; background:#fff; border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; box-shadow:0 1px 2px rgba(16,35,63,.04); }
@@ -99,11 +101,15 @@
     <div class="tabs sources" id="sources"></div>
     <div class="timeframes" id="tfWrap" hidden><div class="tabs" id="tabs"></div></div>
     <div class="sortbox">
-      <span>Sort</span>
-      <button class="sort-btn" data-sort="newest" type="button">Newest</button>
-      <button class="sort-btn" data-sort="rank" type="button">Ranking</button>
-      <span>Filter</span>
-      <button class="sort-btn" id="favBtn" type="button">★ Favorites</button>
+      <div class="sgrp">
+        <span>Sort</span>
+        <button class="sort-btn" data-sort="newest" type="button">Newest</button>
+        <button class="sort-btn" data-sort="rank" type="button">Ranking</button>
+      </div>
+      <div class="sgrp">
+        <span>Filter</span>
+        <button class="sort-btn" id="favBtn" type="button">★ Favorites</button>
+      </div>
     </div>
   </div>
   <p class="count" id="count"></p>
