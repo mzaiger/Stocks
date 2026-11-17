@@ -4,8 +4,8 @@ A static stock board in the same style as Movie Board. It ranks stocks by three 
 
 | Tab | Like (Movies) | Score (0 to 100) | Source |
 |---|---|---|---|
-| **Gainers** | Rotten Tomatoes | Price gain since the previous close, for stocks on FMP's top-gainers list | FMP |
-| **Losers** | (none) | Price drop since the previous close, for stocks on FMP's top-losers list | FMP |
+| **Gainers** | Rotten Tomatoes | Price gain since the previous close, for any stock on the board up at least 1% | FMP, Yahoo |
+| **Losers** | (none) | Price drop since the previous close, for any stock on the board down at least 1% | FMP, Yahoo |
 | **Most Active** | IMDb | Dollars traded (price x volume), for stocks on FMP's most-active list | FMP |
 | **Buzz** | Box Office | Reddit mentions in the last 24 hours | ApeWisdom |
 | **All** | All | The price-move score (Gainers or Losers, whichever applies), Most Active and Buzz averaged evenly, **only for stocks on at least 2 of the 4 rankings** | |
@@ -126,8 +126,8 @@ The page shows the latest snapshot only, so there are no time frame buttons by d
 
 Each snapshot scores every stock on the three axes. A stock only scores on a ranking if it is on that list. (If you turn on extra time frames with `BOARD_WINDOWS`, the scores are averaged over all snapshots in the frame, and a snapshot where the stock is on none of the lists counts as 0, so a stock that stays on the lists beats one that spiked once.)
 
-* **Gainers:** `100 x ln(1 + change%) / ln(51)` (change = the regular-session change) for stocks on the top-gainers list, so +5% is about 45, +10% about 61, +20% about 77, +50% or more is 100.
-* **Losers:** the same formula on the size of the drop, for stocks on the top-losers list: -5% is about 45, -10% about 61, -50% or worse is 100. A stock is a gainer or a loser, never both in one snapshot.
+* **Gainers:** `100 x ln(1 + change%) / ln(51)` (change = the regular-session change) for any stock on the board that is up at least `MIN_MOVE` percent (default 1), whichever list it came from, so +5% is about 45, +10% about 61, +20% about 77, +50% or more is 100.
+* **Losers:** the same formula on the size of the drop, for any stock on the board that is down at least `MIN_MOVE` percent: -5% is about 45, -10% about 61, -50% or worse is 100. A stock is a gainer or a loser, never both in one snapshot.
 * **Most Active:** dollars traded on a log scale, $1M = 0 and $10B = 100, for stocks on the most-active list. If volume is missing from the list, its rank on the list is used instead.
 * **Buzz:** `100 x ln(1 + mentions) / ln(1 + mentions of the most-mentioned stock)` from ApeWisdom's 24-hour mention count. The Buzz chip also shows the change from the 24 hours before.
 * **All:** the average of three scores (price move, Most Active, Buzz), **only if the stock is on at least 2 of the 4 rankings** (a score above 0 on at least two tabs). The price-move score is the Gainers score for a gainer and the Losers score for a loser, so a stock is not held back by the one of the two lists it can never be on. A stock on all three beats one on two with similar scores because the missing one counts as 0.
@@ -140,11 +140,12 @@ Applied when each snapshot is taken. All can be overridden with environment vari
 
 | Filter | Default | Variable |
 |---|---|---|
-| Share price at least | $5 | `MIN_PRICE` |
+| Share price at least | $2.50 | `MIN_PRICE` |
 | Exchange | NASDAQ, NYSE, AMEX, BATS, CBOE (no OTC) | `EXCHANGES` |
-| Market cap at least (when known) | $300M | `MIN_MARKET_CAP` |
-| Dollars traded at least (when known) | $5M | `MIN_DOLLAR_VOLUME` |
-| Shares traded today at least (screener) | 500,000 | `MIN_SHARE_VOLUME` |
+| Market cap at least (when known) | $150M | `MIN_MARKET_CAP` |
+| Dollars traded at least (when known) | $2.5M | `MIN_DOLLAR_VOLUME` |
+| Shares traded today at least (screener) | 250,000 | `MIN_SHARE_VOLUME` |
+| Move to count as a gainer or loser (percent) | 1 | `MIN_MOVE` |
 | Ticker must look like a real symbol | 1 to 6 letters | |
 
 **How the filters use the screener (if your plan has it):** each run asks FMP's screener for every stock with a market cap, price and share volume above the limits (`isActivelyTrading`, no ETFs or funds, up to `UNIVERSE_LIMIT` = 1000 rows). That one call supplies the volume and market cap shown on the tiles. When the answer is complete (more than 200 rows and not cut off by the limit), any stock on the gainers, most-active or Reddit list that is **not** in it is dropped: it is below a limit, or it is an ETF or fund. If the answer is missing or looks cut off (always the case on the free plan), nothing is dropped this way: the price, exchange, market cap and dollar-volume limits are applied to each stock using the Yahoo or FMP quote values, and a limit is skipped when its value is unknown.

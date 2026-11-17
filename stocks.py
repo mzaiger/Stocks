@@ -44,9 +44,9 @@ FMP_LIMIT = int(os.environ.get("FMP_DAILY_LIMIT", "250"))               # FMP fr
 FMP_MARGIN = int(os.environ.get("FMP_MARGIN", "20"))                    # requests never spent
 SESSION_START = os.environ.get("SESSION_START", "04:00")                # ET, pre-market opens
 SESSION_END = os.environ.get("SESSION_END", "20:00")                    # ET, after-hours closes
-MIN_PRICE = float(os.environ.get("MIN_PRICE", "5"))                     # no penny stocks
-MIN_MCAP = float(os.environ.get("MIN_MARKET_CAP", "300000000"))         # applied when the market cap is known
-MIN_DVOL = float(os.environ.get("MIN_DOLLAR_VOLUME", "5000000"))        # price x volume, applied when volume is known
+MIN_PRICE = float(os.environ.get("MIN_PRICE", "2.5"))                     # no penny stocks
+MIN_MCAP = float(os.environ.get("MIN_MARKET_CAP", "150000000"))         # applied when the market cap is known
+MIN_DVOL = float(os.environ.get("MIN_DOLLAR_VOLUME", "2500000"))        # price x volume, applied when volume is known
 EXCH_TOKENS = [t.strip().upper() for t in os.environ.get("EXCHANGES", "NASDAQ,NYSE,AMEX,BATS,CBOE").split(",") if t.strip()]
 BUZZ_FILTER = os.environ.get("BUZZ_FILTER", "all-stocks")               # ApeWisdom community filter
 BUZZ_PAGES = int(os.environ.get("BUZZ_PAGES", "1"))                     # 100 tickers per page
@@ -57,7 +57,8 @@ META_TTL_H = int(os.environ.get("META_TTL_HOURS", "24"))
 PROFILES_PER_RUN = int(os.environ.get("PROFILES_PER_RUN", "4"))         # company profile lookups (website) per run, if the budget allows
 PROFILE_TTL_DAYS = int(os.environ.get("PROFILE_TTL_DAYS", "30"))        # how long a website / market cap is remembered
 UNIVERSE_LIMIT = int(os.environ.get("UNIVERSE_LIMIT", "1000"))          # rows asked from the FMP screener (volume + market cap for all stocks)
-MIN_SHARE_VOL = int(os.environ.get("MIN_SHARE_VOLUME", "500000"))       # screener: at least this many shares traded today
+MIN_MOVE = float(os.environ.get("MIN_MOVE", "1"))                        # a stock counts as a gainer / loser once its regular-session move is at least this many percent
+MIN_SHARE_VOL = int(os.environ.get("MIN_SHARE_VOLUME", "250000"))       # screener: at least this many shares traded today
 PROFILE_RETRY_DAYS = int(os.environ.get("PROFILE_RETRY_DAYS", "14"))    # retry a company that had no website after this
 DATA = Path(os.environ.get("DATA_DIR", "data"))
 STATE = Path(os.environ.get("STATE_DIR", "state"))
@@ -732,13 +733,13 @@ def prune(latest_t):
 def gain_score(c):
     if c is None:
         return None
-    return 0.0 if c <= 0 else min(100.0, 100 * math.log1p(c) / math.log1p(50))      # +50% or more = 100
+    return 0.0 if c < MIN_MOVE else min(100.0, 100 * math.log1p(c) / math.log1p(50))      # +50% or more = 100
 
 
 def loss_score(c):
     if c is None:
         return None
-    return 0.0 if c >= 0 else min(100.0, 100 * math.log1p(-c) / math.log1p(50))     # -50% or worse = 100
+    return 0.0 if c > -MIN_MOVE else min(100.0, 100 * math.log1p(-c) / math.log1p(50))     # -50% or worse = 100
 
 
 def vol_score(dollars):
@@ -765,11 +766,11 @@ def snapshot_scores(s):
         if not ok["g"]:
             g = None
         else:
-            g = gain_score(move_pct(r)) if "gr" in r else 0.0                 # only stocks on the gainers list score here
+            g = gain_score(move_pct(r)) or 0.0                                   # every stock on the board scores by its own move, list or not
         if not ok.get("l"):                                                  # snapshots from before Losers existed have no "l"
             l = None
         else:
-            l = loss_score(move_pct(r)) if "lr" in r else 0.0                 # only stocks on the losers list score here
+            l = loss_score(move_pct(r)) or 0.0                                   # every stock on the board scores by its own move, list or not
         if not ok["a"]:
             a = None
         elif "ar" not in r:

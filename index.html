@@ -119,8 +119,8 @@
 <script>
 const TABS = [
   { k: 'all',  l: 'All',         i: 4, short: 'average score, stocks on at least 2 of the 4 rankings', hint: 'Average of the price-move (Gainers or Losers), Most Active and Buzz scores, weighted evenly. A stock must be on at least 2 of the 4 rankings' },
-  { k: 'gain', l: 'Gainers',     i: 0, short: 'price gain', hint: 'Price gain since the previous close, for stocks on the top-gainers list (100 = up 50% or more)' },
-  { k: 'loss', l: 'Losers',      i: 1, short: 'price drop', hint: 'Price drop since the previous close, for stocks on the top-losers list (100 = down 50% or more)' },
+  { k: 'gain', l: 'Gainers',     i: 0, short: 'price gain', hint: 'Price gain since the previous close, for any stock on the board up 1% or more (100 = up 50% or more)' },
+  { k: 'loss', l: 'Losers',      i: 1, short: 'price drop', hint: 'Price drop since the previous close, for any stock on the board down 1% or more (100 = down 50% or more)' },
   { k: 'act',  l: 'Most Active', i: 2, short: 'dollars traded', hint: 'Dollars traded, for stocks on the most-active list ($1M = 0, $10B = 100)' },
   { k: 'buzz', l: 'Buzz',        i: 3, short: 'Reddit mentions', hint: 'Reddit mentions in the last 24 hours, relative to the most-mentioned stock' },
 ];
