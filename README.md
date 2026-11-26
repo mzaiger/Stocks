@@ -10,6 +10,8 @@ A static stock board in the same style as Movie Board. It ranks stocks by three 
 | **Buzz** | Box Office | Reddit mentions in the last 24 hours | ApeWisdom |
 | **All** | All | The price-move score (Gainers or Losers, whichever applies), Most Active and Buzz averaged evenly, **only for stocks on at least 2 of the 4 rankings** | |
 
+On top of the ranked tabs, the **All** tab starts with three **index tiles** (S&P 500, Dow, Nasdaq) that are not ranked: they carry ranks 0.1, 0.2 and 0.3 so they sit above #1 (see [Index tiles](#index-tiles-sp-500-dow-nasdaq)).
+
 A Google Apps Script timer (the same pattern as SlickDealsTracker) triggers a GitHub Actions workflow every 15 minutes while the market session is open; the workflow takes a snapshot and commits it as JSON. `index.html` (GitHub Pages) reads `data/board.json`.
 
 ## API key (GitHub secret)
@@ -30,12 +32,13 @@ Add them under **Settings > Secrets and variables > Actions**. ApeWisdom, Yahoo 
 | `why.py` | Fetches recent headlines and makes the one Gemini call per run that writes the "why is it trending" lines |
 | `.github/workflows/stocks.yml` | Runs on a `repository_dispatch` event (`trigger-stocks-pull`) or manually; no cron schedule. Exits by itself when the market session is closed |
 | `apps-script/Code.gs` | The Google Apps Script timer that sends the event. Paste it into script.google.com |
-| `data/board.json` | What the page reads: every stock on the latest snapshot with its numbers and scores, rebuilt on each run |
+| `data/board.json` | What the page reads: every stock on the latest snapshot with its numbers and scores, plus the `indices` block for the index tiles, rebuilt on each run |
 | `state/snaps/*.json` | One small file per snapshot, kept for about a day (for "trending since"), then deleted |
 | `state/usage.json` | FMP requests spent today |
 | `state/meta.json` | Cached quote info, and which optional FMP endpoints the plan does not allow today |
 | `state/profiles.json` | Company website and market cap from FMP's company profile, remembered for 30 days (14 days if a company had no website) |
 | `state/why.json` | The "why trending" line for each stock and when it was written |
+| `state/indices.json` | The newest Yahoo quote for each index tile (level, change, previous close, open, high, low, 52-week range, quote time), refreshed every run |
 | `state/trending.json` | When each stock first got on the board (without going off it), for the "35m ago" on the tile |
 | `requirements.txt` | `requests`, `tzdata` |
 
@@ -76,6 +79,7 @@ Notes:
 |---|---|---|---|
 | FMP | 3 (gainers, losers, actives) plus up to 4 profile lookups and a few single quotes if the budget allows | 192 plus the optional ones, capped by the script | 250 per day |
 | ApeWisdom | 1 | 64 | none stated |
+| Yahoo index quotes | 3 (cookie, crumb, one batch quote for the three indices), plus up to 3 chart lookups only for an index the batch missed | about 200 | same unofficial feed as below |
 | Yahoo quotes | 3 (cookie, crumb, batch quote) plus up to 60 one-by-one lookups only for stocks the batch missed | about 200 to 5,000 | not published; about 2,000 per hour per IP is reported |
 | Yahoo / Google News headlines | 1 or 2 per stock that needs a "why trending" line (at most 25) | a few hundred | none stated |
 | **Gemini** | **1 call per run, rewriting the line for every stock on the board** | **64** | free tier is reported at about 500 per day and 10 per minute for the flash-lite models; Google shows the real figures in AI Studio |
@@ -151,6 +155,21 @@ Applied when each snapshot is taken. All can be overridden with environment vari
 **How the filters use the screener (if your plan has it):** each run asks FMP's screener for every stock with a market cap, price and share volume above the limits (`isActivelyTrading`, no ETFs or funds, up to `UNIVERSE_LIMIT` = 1000 rows). That one call supplies the volume and market cap shown on the tiles. When the answer is complete (more than 200 rows and not cut off by the limit), any stock on the gainers, most-active or Reddit list that is **not** in it is dropped: it is below a limit, or it is an ETF or fund. If the answer is missing or looks cut off (always the case on the free plan), nothing is dropped this way: the price, exchange, market cap and dollar-volume limits are applied to each stock using the Yahoo or FMP quote values, and a limit is skipped when its value is unknown.
 
 Reddit tickers get their price, change, volume and market cap from the screener or the Yahoo batch quote (all 100 in one request); if neither works, up to `BUZZ_LOOKUP` (40) of them get an FMP quote instead, and a ticker that cannot be priced is left out. Other settings: `BUZZ_FILTER` (default `all-stocks`; also `wallstreetbets`, `stocks`, ...) and `BUZZ_PAGES` (100 tickers each).
+
+## Index tiles (S&P 500, Dow, Nasdaq)
+
+Three extra tiles that are not part of the rankings. They lead the **All** tab (and the Trendslope Live Stream) because their ranks are **0.1, 0.2 and 0.3**, below the #1 stock, so they sort first under both Ranking and Newest. The pill on the tile says INDEX instead of a number. The other tabs do not show them; star one and it also appears under **★ Favorites**.
+
+| Tile | Yahoo symbol | Rank |
+|---|---|---|
+| S&P 500 | `^GSPC` | 0.1 |
+| DOW (Dow Jones Industrial Average) | `^DJI` | 0.2 |
+| NASDAQ (Nasdaq Composite) | `^IXIC` | 0.3 |
+
+* **Data:** Yahoo Finance's keyless quote feed, so it costs no FMP requests. One batch quote asks for all three symbols; for an index it does not return, Yahoo's chart feed is asked instead. If both fail, the tile keeps its last saved values and its time shows their real age. The newest quote of each index is kept in `state/indices.json` and copied into `data/board.json` under `indices` on every run (a failure here never loses the stock snapshot).
+* **Tile:** the index level with the point and percent change since the previous close and an arrow; the full name and the previous close; one line on how far the level is from its 52-week high and low; **Open**, **High** and **Low** with each one's distance from the previous close; a green dot and "Open" or "Closed" with how long ago Yahoo last updated the level (so at night and on weekends it shows the last close); and links to the official index site, Yahoo Finance, TradingView and Google Finance. The tile image is the favicon of the index provider's site (S&P Global, Dow Jones, Nasdaq), with the letters as the fallback. Pre-market and after-hours do not apply: the indices only move in the regular session.
+* **No scores or filters:** index tiles are not counted in "N stocks", are not scored, and are not run through the price, market cap or volume filters.
+* **Change them:** edit `INDEX_DEFS` in `stocks.py` (Yahoo symbol, label, full name, rank, icon domain, links). For example swap `^IXIC` for `^NDX` (Nasdaq-100) or add `^RUT` with rank 0.4. Both this page and Trendslope draw whatever `indices` holds, so no page edit is needed. `INDICES=0` in the workflow `env` turns the tiles off. `python stocks.py check` prints the three index levels it can reach.
 
 ## The page
 

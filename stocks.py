@@ -10,6 +10,7 @@ FMP (secret FMP_Key): biggest gainers, biggest losers, most actives, company web
 Yahoo Finance (no key, unofficial): one batch quote per run for volume, market cap and change.
 Gemini (secret GEMINI_KEY, see why.py): a short 'why is it trending' line per stock, from recent headlines.
 ApeWisdom (no key): Reddit mention counts.
+Index tiles (S&P 500, Dow, Nasdaq): Yahoo quotes saved in state/indices.json, shown ahead of rank 1 (ranks 0.1, 0.2, 0.3).
 Each run saves one small snapshot in state/snaps/. The board is rebuilt from those snapshots, so every
 time frame (15 min ... 24 hours) is just a different slice of the same files.
 """
@@ -26,6 +27,7 @@ import sys
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote as urlquote
 from zoneinfo import ZoneInfo
 
 import requests
@@ -436,6 +438,133 @@ def fetch_yahoo_charts(symbols, meta, now):
     return out
 
 
+# ---------- market indices (S&P 500, Dow, Nasdaq): three tiles that sit ahead of rank 1 ----------
+INDEX_ON = os.environ.get("INDICES", "1") != "0"                         # INDICES=0 switches the index tiles off
+INDEX_DEFS = [                                                           # edit this list to change, add or remove an index; both sites follow
+    # sym = Yahoo symbol, n = big label, fn = full name, rk = rank (below 1, so the tile sorts ahead of the #1 stock), code = letters if the logo fails,
+    # icon = domain whose favicon is the tile image, site / tv / gf = official site, TradingView and Google Finance links
+    {"sym": "^GSPC", "n": "S&P 500", "fn": "S&P 500 Index", "rk": 0.1, "code": "S&P", "icon": "spglobal.com",
+     "site": "https://www.spglobal.com/spdji/en/indices/equity/sp-500/", "tv": "https://www.tradingview.com/symbols/SPX/",
+     "gf": "https://www.google.com/finance/quote/.INX:INDEXSP"},
+    {"sym": "^DJI", "n": "DOW", "fn": "Dow Jones Industrial Average", "rk": 0.2, "code": "DJIA", "icon": "dowjones.com",
+     "site": "https://www.spglobal.com/spdji/en/indices/equity/dow-jones-industrial-average/", "tv": "https://www.tradingview.com/symbols/DJ-DJI/",
+     "gf": "https://www.google.com/finance/quote/.DJI:INDEXDJX"},
+    {"sym": "^IXIC", "n": "NASDAQ", "fn": "Nasdaq Composite", "rk": 0.3, "code": "COMP", "icon": "nasdaq.com",      # for the Nasdaq-100 use ^NDX
+     "site": "https://www.nasdaq.com/market-activity/index/comp", "tv": "https://www.tradingview.com/symbols/NASDAQ-IXIC/",
+     "gf": "https://www.google.com/finance/quote/.IXIC:INDEXNASDAQ"},
+]
+
+
+def idx_ts(v):
+    v = num(v)
+    return datetime.fromtimestamp(v, timezone.utc) if v else None
+
+
+def idx_row(p, pc, ch, pct, op, hi, lo, h52, l52, t, state, now, ses):
+    """The stored row for one index (levels in points). Fills in whatever can be worked out from the rest. None if there is no level."""
+    if p is None:
+        return None
+    if ch is None and pc:
+        ch = p - pc
+    if pct is None and pc and ch is not None:
+        pct = ch / pc * 100
+    if pc is None and ch is not None:
+        pc = p - ch
+    if state:
+        live = state == "REGULAR"
+    else:                                                                # no market state (chart feed): open if we are in the session and the quote is fresh
+        live = ses == "reg" and t is not None and (now - t).total_seconds() <= 20 * 60
+    row = {"p": p, "ch": ch, "c": pct, "pc": pc, "op": op, "hi": hi, "lo": lo, "h52": h52, "l52": l52}
+    row = {k: round(v, 4 if k == "c" else 2) for k, v in row.items() if v is not None}
+    row["t"] = iso(t or now)                                             # when Yahoo last updated the level (the close, outside the session)
+    row["live"] = 1 if live else 0
+    return row
+
+
+def idx_from_quote(q, now, ses):
+    return idx_row(num(q.get("regularMarketPrice")), num(q.get("regularMarketPreviousClose")), num(q.get("regularMarketChange")),
+                   num(q.get("regularMarketChangePercent")), num(q.get("regularMarketOpen")), num(q.get("regularMarketDayHigh")),
+                   num(q.get("regularMarketDayLow")), num(q.get("fiftyTwoWeekHigh")), num(q.get("fiftyTwoWeekLow")),
+                   idx_ts(q.get("regularMarketTime")), str(q.get("marketState") or "").upper(), now, ses)
+
+
+def idx_from_chart(res, now, ses):
+    m = (res or {}).get("meta") or {}
+    qd = ((((res or {}).get("indicators") or {}).get("quote")) or [{}])[0] or {}
+    opens = [x for x in (qd.get("open") or []) if x is not None]
+    pc = num(m.get("previousClose") if m.get("previousClose") is not None else m.get("chartPreviousClose"))
+    return idx_row(num(m.get("regularMarketPrice")), pc, None, None, num(opens[-1]) if opens else None, num(m.get("regularMarketDayHigh")),
+                   num(m.get("regularMarketDayLow")), num(m.get("fiftyTwoWeekHigh")), num(m.get("fiftyTwoWeekLow")),
+                   idx_ts(m.get("regularMarketTime")), "", now, ses)
+
+
+def fetch_indices(meta, now, ses):
+    """Quotes for the index tiles, {Yahoo symbol: row}: one batch quote, then the chart feed one by one for any index it missed.
+    Costs no FMP requests. {} if Yahoo refuses (the tiles then keep their last saved values and show their real age)."""
+    syms = [d["sym"] for d in INDEX_DEFS]
+    im = meta.setdefault("yahoo_idx", {})
+    if im.get("fail_t") and (now - parse_iso(im["fail_t"])).total_seconds() < YAHOO_RETRY_MIN * 60:
+        return {}
+    out = {}
+    try:
+        sess = yahoo_session()
+        try:                                                                 # 1) batch quote (needs the crumb)
+            cr = sess.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=15)
+            crumb = cr.text.strip()
+            if cr.status_code == 200 and crumb and len(crumb) <= 40 and " " not in crumb and "<" not in crumb:
+                r = sess.get("https://query1.finance.yahoo.com/v7/finance/quote", params={"symbols": ",".join(syms), "crumb": crumb}, timeout=20)
+                if r.status_code == 200:
+                    for q in (r.json().get("quoteResponse") or {}).get("result") or []:
+                        sym = str(q.get("symbol") or "").upper()
+                        row = idx_from_quote(q, now, ses) if sym in syms else None
+                        if row:
+                            out[sym] = row
+        except Exception as e:
+            print(f"  index batch quote failed ({type(e).__name__}); trying the chart feed")
+        for sym in syms:                                                     # 2) chart feed for whatever is still missing
+            if sym in out:
+                continue
+            r = sess.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{urlquote(sym, safe='')}", params={"range": "1d", "interval": "1d"}, timeout=20)
+            if r.status_code == 200:
+                row = idx_from_chart(((r.json().get("chart") or {}).get("result") or [None])[0], now, ses)
+                if row:
+                    out[sym] = row
+            time.sleep(0.35)
+    except Exception as e:
+        print(f"  Yahoo index quotes not available ({type(e).__name__})")
+    if out:
+        im.pop("fail_t", None)
+    else:
+        im["fail_t"] = iso(now)
+    return out
+
+
+def update_indices(meta, now, ses):
+    """Keep the newest row for each index in state/indices.json. A failed fetch leaves the old rows in place."""
+    if not INDEX_ON:
+        return
+    fresh = fetch_indices(meta, now, ses)
+    if not fresh:
+        return
+    saved = read(STATE / "indices.json", {})
+    saved.update(fresh)
+    write(STATE / "indices.json", saved)
+    print("  Indices: " + ", ".join(f"{d['n']} {fresh[d['sym']]['p']:,.2f} ({fresh[d['sym']].get('c', 0):+.2f}%)" for d in INDEX_DEFS if d["sym"] in fresh))
+
+
+def board_indices():
+    """What board.json carries for the index tiles: the saved quote plus label, name, rank and links from INDEX_DEFS."""
+    if not INDEX_ON:
+        return {}
+    saved = read(STATE / "indices.json", {})
+    out = {}
+    for d in INDEX_DEFS:
+        q = saved.get(d["sym"])
+        if isinstance(q, dict) and q.get("p") is not None:
+            out[d["sym"]] = {**{k: v for k, v in d.items() if k != "sym"}, **q}
+    return out
+
+
 def fetch_quotes(symbols, meta, now, et):
     """Fresh quotes (price, change, volume, market cap): a batch call if the plan allows it, a few single calls otherwise."""
     global QUOTE_DONE
@@ -800,7 +929,7 @@ def build_board():
     wins = windows_for(INTERVAL)
     board = {"updated": iso(datetime.now(timezone.utc)), "interval": INTERVAL, "windows": wins, "asof": None, "session": None,
              "snaps": {}, "filters": {"min_price": MIN_PRICE, "min_market_cap": MIN_MCAP, "min_dollar_volume": MIN_DVOL, "exchanges": EXCH_TOKENS},
-             "sources": {}, "stocks": {}}
+             "sources": {}, "indices": board_indices(), "stocks": {}}
     if not snaps:
         write(DATA / "board.json", board)
         return board
@@ -910,6 +1039,10 @@ def run():
             why.update(snap["rows"], now, STATE, importance_key(snap["rows"]))
         except Exception as e:                      # a failed "why trending" step must never lose the snapshot
             print(f"  why-trending step failed ({type(e).__name__}); continuing")
+        try:
+            update_indices(meta, now, ses)
+        except Exception as e:                      # a failed index quote must never lose the snapshot either
+            print(f"  index quotes step failed ({type(e).__name__}); continuing")
         files = snap_files()
         prev = read(files[-1], None) if files else None
         if prev and prev.get("fp") == snap["fp"] and prev.get("bp") == snap["bp"]:
@@ -961,6 +1094,9 @@ def check():
     yc = fetch_yahoo_charts(["AAPL"], {}, datetime.now(timezone.utc))
     print(f"  Yahoo chart feed: " + (f"AAPL price {yc['AAPL']['p']}, change {yc['AAPL']['c']:.2f}%, volume {yc['AAPL']['v']}" if yc else "not available from here")
           + f"  (Chrome impersonation via curl_cffi: {'on' if creq else 'OFF - pip install curl_cffi'})")
+    _now = datetime.now(timezone.utc)
+    ix = fetch_indices({}, _now, session_of(_now.astimezone(ET)))
+    print("  Yahoo index quotes: " + (", ".join(f"{d['n']} {ix[d['sym']]['p']:,.2f}" for d in INDEX_DEFS if d["sym"] in ix) if ix else "not available from here"))
     items = why.headlines("AAPL", "Apple", datetime.now(timezone.utc))
     print(f"  headlines (Yahoo/Google News RSS): {len(items)} found" + (f", newest: {items[0][0][:70]}" if items else ""))
     print("  GEMINI_KEY: " + ("set" if os.environ.get("GEMINI_KEY", "").strip() else "NOT set (no 'why trending' lines)"))
@@ -1039,6 +1175,14 @@ def demo():
              "No clear news found in the headlines; the move comes with unusually high trading volume.",
              "Shares rose after quarterly results beat expectations, with sales ahead of forecasts."]
     write(STATE / "why.json", {s: {"d": texts[i % len(texts)], "t": iso(datetime.now(timezone.utc) - timedelta(minutes=20 * (i % 9)))} for i, s in enumerate(list(names)[:24])})
+    base = {"^GSPC": 6912.4, "^DJI": 50214.6, "^IXIC": 23688.2}
+    demo_idx, tnow = {}, datetime.now(timezone.utc)
+    for d in INDEX_DEFS:
+        pc = base.get(d["sym"], 10000.0)
+        p = pc * (1 + rnd.uniform(-0.006, 0.009))
+        hi, lo = max(p, pc) * (1 + rnd.uniform(0.0005, 0.003)), min(p, pc) * (1 - rnd.uniform(0.0005, 0.003))
+        demo_idx[d["sym"]] = idx_row(p, pc, None, None, pc * (1 + rnd.uniform(-0.002, 0.003)), hi, lo, pc * 1.012, pc * 0.78, tnow - timedelta(minutes=3), "REGULAR", tnow, "reg")
+    write(STATE / "indices.json", demo_idx)
     b = build_board()
     print(f"Demo data written to {DATA}/board.json ({len(b['stocks'])} stocks, {len(times)} snapshots). "
           f"Serve this folder and open index.html?data=demo_data")

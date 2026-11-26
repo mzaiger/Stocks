@@ -82,6 +82,11 @@
   .links a:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
   .links img { width:22px; height:22px; display:block; flex:none; }
   .links .arrow { font-size:15px; line-height:1; }
+  .rank-pill.idx { font-size:12px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; padding:5px 10px; }
+  .chip .rk.pc { font-size:12.5px; font-weight:600; }
+  .chip .rk.up { color:var(--up); } .chip .rk.down { color:var(--down); }
+  .when .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--text-dim); margin-right:6px; vertical-align:.5px; }
+  .when .dot.live { background:var(--up); }
   .empty { text-align:center; padding:70px 20px; color:var(--text-dim); font-family:'IBM Plex Mono',monospace; font-size:13px; grid-column:1/-1; line-height:1.6; }
   .foot { margin-top:28px; padding-top:14px; border-top:1px solid var(--line); font-size:12px; line-height:1.6; color:var(--text-dim); }
   @media (max-width:700px) { .pline .px { font-size:18px; } .chip .rk { font-size:14.5px; } .links .arrow { display:none; } .thumb-wrap { height:118px; } .thumb-wrap img, .thumb-fallback { width:80px; height:80px; } header, main { padding-left:14px; padding-right:14px; } .grid { grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:10px; } .ticker { font-size:19px; } .chip { font-size:13px; } }
@@ -95,7 +100,7 @@
     <div class="updated-row"><span id="lastUpdated">Last updated: —</span><button class="refresh-btn" id="refreshBtn" type="button">Refresh</button></div>
   </div>
   <h1>Stock Board</h1>
-  <p class="sub">Stocks that are moving, heavily traded and talked about, from the latest snapshot (taken every 15 minutes on business days, pre-market through after-hours). <b>Gainers</b> are the biggest gains, <b>Losers</b> the biggest drops, <b>Most Active</b> the heaviest trading, <b>Buzz</b> the most Reddit mentions. The <b>All</b> tab only lists stocks that are on <b>at least 2 of the 4 rankings</b>. Sort by <b>Newest</b> (stocks that started trending most recently, shown as “35m ago” on each tile) or by <b>Ranking</b>. Each tile has a short AI summary of why the stock is trending, rewritten on every update from recent headlines. Star a stock to keep it handy. Small and penny stocks are filtered out.</p>
+  <p class="sub">Stocks that are moving, heavily traded and talked about, from the latest snapshot (taken every 15 minutes on business days, pre-market through after-hours). <b>Gainers</b> are the biggest gains, <b>Losers</b> the biggest drops, <b>Most Active</b> the heaviest trading, <b>Buzz</b> the most Reddit mentions. The <b>All</b> tab only lists stocks that are on <b>at least 2 of the 4 rankings</b>. Sort by <b>Newest</b> (stocks that started trending most recently, shown as “35m ago” on each tile) or by <b>Ranking</b>. Each tile has a short AI summary of why the stock is trending, rewritten on every update from recent headlines. The <b>All</b> tab starts with the <b>S&amp;P 500, Dow and Nasdaq</b>, pinned above the ranked stocks. Star a stock to keep it handy. Small and penny stocks are filtered out.</p>
 </header>
 <main>
   <div class="controls">
@@ -228,6 +233,55 @@ function cardHtml(sym, st, sc, rank, tabDef, ranks) {
   </article>`;
 }
 
+// ---- index tiles (S&P 500, Dow, Nasdaq): board.json "indices", ranks 0.1 / 0.2 / 0.3 so they sort ahead of #1 ----
+const n0 = v => v == null ? '—' : Math.round(v).toLocaleString('en-US');
+const n2 = v => v == null ? '—' : v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const signed = v => (v > 0 ? '+' : '') + n2(v);
+const upDown = v => v > 0 ? 'up' : v < 0 ? 'down' : '';
+const tri = v => v > 0 ? '▲' : v < 0 ? '▼' : '';
+function indexItems() {
+  const o = board && board.indices ? board.indices : {};
+  return Object.entries(o).filter(([, ix]) => ix && ix.p != null)
+    .map(([sym, st]) => ({ sym, st, sc: null, idx: true, rank: st.rk ?? 0 })).sort((a, b) => a.rank - b.rank);
+}
+function indexCardHtml(sym, ix) {
+  const q = encodeURIComponent(sym);                                     // ^GSPC -> %5EGSPC
+  const fav = d => `https://www.google.com/s2/favicons?domain=${encodeURIComponent(d)}&sz=128`;
+  const icon = (href, src, name) => `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="${esc(name)}" aria-label="${esc(name)}"><img src="${esc(src)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.replaceWith(document.createTextNode('${name[0]}'))"><span class="arrow">↗</span></a>`;
+  const site = ix.site ? safeUrl(ix.site) : null, tv = ix.tv ? safeUrl(ix.tv) : null, gf = ix.gf ? safeUrl(ix.gf) : null;
+  const links = [];
+  if (site) links.push(icon(site.href, fav(site.hostname), 'Official site'));
+  links.push(icon(`https://finance.yahoo.com/quote/${q}`, fav('finance.yahoo.com'), 'Yahoo Finance'));
+  if (tv) links.push(icon(tv.href, fav('tradingview.com'), 'TradingView'));
+  if (gf) links.push(icon(gf.href, fav('google.com'), 'Google Finance'));
+  const pct = ix.c;
+  const gap = v => ix.pc ? (v / ix.pc - 1) * 100 : null;                  // a level against the previous close, in percent
+  const chip = (label, v, tip) => { const g = v == null ? null : gap(v); return `<div class="chip" title="${esc(tip)}"><small>${label}</small><span class="val">${n0(v)}</span><span class="rk pc ${upDown(g)}">${g == null ? '—' : sign(g)}</span></div>`; };
+  const gt = v => v >= 10 ? v.toFixed(0) : v.toFixed(1);
+  let range = '';
+  if (ix.h52 && ix.l52) {
+    const below = (ix.h52 - ix.p) / ix.h52 * 100, above = (ix.p - ix.l52) / ix.l52 * 100;
+    range = below <= 0.05 ? 'At its 52-week high' : `${gt(below)}% below its 52-week high · ${gt(Math.max(0, above))}% above its 52-week low`;
+  }
+  const img = ix.icon ? `<img src="${esc(fav(ix.icon))}" data-next="" data-sym="${esc(ix.code || sym.replace('^', ''))}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="logoErr(this)">`
+                      : `<div class="thumb-fallback">${esc(ix.code || sym.replace('^', ''))}</div>`;
+  return `<article class="card index">
+    <div class="thumb-wrap">${img}
+      <label class="fav-toggle" title="Favorite"><input type="checkbox" class="fav-input" data-sym="${esc(sym)}" ${favs.has(sym) ? 'checked' : ''}><span class="fav-star">★</span></label>
+      <div class="rank-pill idx" title="Market index, pinned above the ranked stocks">Index</div>
+    </div>
+    <div class="body">
+      <div class="ticker-row"><p class="ticker"><a href="https://finance.yahoo.com/quote/${q}" target="_blank" rel="noopener noreferrer" title="Open ${esc(ix.n || sym)} on Yahoo Finance">${esc(ix.n || sym)}<span class="arrow" aria-hidden="true">↗</span></a></p></div>
+      <div class="pricebox"><div class="pline" title="Index level and change since the previous close"><span class="px">${n2(ix.p)}</span>${pct == null ? '' : `<span class="dlt ${upDown(pct)}">${ix.ch == null ? '' : signed(ix.ch) + ' '}${sign(pct)} ${tri(pct)}</span>`}</div></div>
+      <p class="name">${esc(ix.fn || ix.n || '')}${ix.pc != null ? ` · Prev ${n2(ix.pc)}` : ''}</p>
+      ${range ? `<p class="why">${range}</p>` : ''}
+      <div class="chips">${chip('Open', ix.op, 'Today’s opening level, and how far it was from the previous close')}${chip('High', ix.hi, 'Today’s high, and how far it is from the previous close')}${chip('Low', ix.lo, 'Today’s low, and how far it is from the previous close')}</div>
+      ${ix.t ? `<p class="when" title="Last quote ${esc(whenText(ix.t))}"><span class="dot${ix.live ? ' live' : ''}"></span>${ix.live ? 'Open' : 'Closed'} · <span class="ago" data-t="${esc(ix.t)}">${esc(agoText(ix.t))}</span></p>` : ''}
+      <div class="links" style="grid-template-columns:repeat(${links.length},minmax(0,1fr))">${links.join('')}</div>
+    </div>
+  </article>`;
+}
+
 function render() {
   const tabDef = TABS.find(t => t.k === tab);
   const grid = $('grid');
@@ -242,24 +296,28 @@ function render() {
   list.forEach((x, i) => { x.rank = i + 1; });
   const ranks = [0, 1, 2, 3].map(i => new Map(all.filter(x => x.sc && (x.sc[i] || 0) > 0).sort((a, b) => b.sc[i] - a.sc[i] || a.sym.localeCompare(b.sym)).map((x, j) => [x.sym, j + 1])));
   const n = list.length;
-  const bySince = (a, b) => (b.st.since || '').localeCompare(a.st.since || '') || (a.rank || 1e9) - (b.rank || 1e9) || a.sym.localeCompare(b.sym);
-  const byRank = (a, b) => (a.rank || 1e9) - (b.rank || 1e9) || a.sym.localeCompare(b.sym);
+  const idx = indexItems();                                               // S&P 500, Dow, Nasdaq: ranks 0.1, 0.2, 0.3 put them ahead of #1
+  const pin = (a, b) => (b.idx ? 1 : 0) - (a.idx ? 1 : 0) || (a.idx && b.idx ? a.rank - b.rank : 0);
+  const bySince = (a, b) => pin(a, b) || (b.st.since || '').localeCompare(a.st.since || '') || (a.rank || 1e9) - (b.rank || 1e9) || a.sym.localeCompare(b.sym);
+  const byRank = (a, b) => pin(a, b) || (a.rank || 1e9) - (b.rank || 1e9) || a.sym.localeCompare(b.sym);
   if (favOnly) {
     const inList = new Map(list.map(x => [x.sym, x]));
-    const bySym = new Map(all.map(x => [x.sym, x]));
+    const bySym = new Map([...all, ...idx].map(x => [x.sym, x]));
     list = [...favs].map(sym => inList.get(sym) || bySym.get(sym) || { sym, st: {}, sc: null });
   }
   list.sort(sort === 'newest' ? bySince : byRank);
+  const idxOn = !favOnly && tab === 'all' && idx.length > 0;               // the index tiles lead the All tab (and show on Favorites once starred)
+  if (idxOn) list = [...idx, ...list];
   const of = board.snaps[key] || 0;
   const frame = wins.length > 1 ? `last ${winLabel(win).toLowerCase()} (${of} snapshot${of === 1 ? '' : 's'})` : 'on the lists right now';
   const order = sort === 'newest' ? 'newest first' : `ranking: ${tabDef.short}`;
   $('count').textContent = favOnly
     ? `${list.length} favorite${list.length === 1 ? '' : 's'} · sorted by ${order}`
-    : `${n} stock${n === 1 ? '' : 's'} ${frame} · sorted by ${order}`;
-  grid.innerHTML = list.length ? list.map(x => cardHtml(x.sym, x.st, x.sc, x.rank, tabDef, ranks)).join('')
+    : `${n} stock${n === 1 ? '' : 's'} ${frame}${idxOn ? ` + ${idx.length} ${idx.length === 1 ? 'index' : 'indices'}` : ''} · sorted by ${order}`;
+  grid.innerHTML = list.length ? list.map(x => x.idx ? indexCardHtml(x.sym, x.st) : cardHtml(x.sym, x.st, x.sc, x.rank, tabDef, ranks)).join('')
     : `<div class="empty">${favOnly ? 'No favorites yet. Star a stock to pin it here.' : 'No stocks match this tab yet.'}</div>`;
   const f = board.filters || {};
-  $('foot').innerHTML = `Prices and movers from <a href="https://site.financialmodelingprep.com/">Financial Modeling Prep</a>; Reddit mention counts from <a href="https://apewisdom.io/">ApeWisdom</a>. Data may be delayed and is for information only, not financial advice. Filters: price at least $${f.min_price ?? 5}, listed on ${esc((f.exchanges || []).join(', '))}, market cap at least ${money(f.min_market_cap)} and dollars traded at least ${money(f.min_dollar_volume)} (when known). A snapshot is taken every ${board.interval} minutes on business days from the pre-market open to the end of after-hours, and this page shows the latest one.${wins.length > 1 ? ' Time frames are measured back from it, so after a weekend or overnight the longer frames hold fewer snapshots.' : ''}`;
+  $('foot').innerHTML = `Prices and movers from <a href="https://site.financialmodelingprep.com/">Financial Modeling Prep</a>; Reddit mention counts from <a href="https://apewisdom.io/">ApeWisdom</a>; index levels from Yahoo Finance. Data may be delayed and is for information only, not financial advice. Filters: price at least $${f.min_price ?? 5}, listed on ${esc((f.exchanges || []).join(', '))}, market cap at least ${money(f.min_market_cap)} and dollars traded at least ${money(f.min_dollar_volume)} (when known). A snapshot is taken every ${board.interval} minutes on business days from the pre-market open to the end of after-hours, and this page shows the latest one.${wins.length > 1 ? ' Time frames are measured back from it, so after a weekend or overnight the longer frames hold fewer snapshots.' : ''}`;
 }
 
 function renderTabs() {
