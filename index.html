@@ -263,6 +263,10 @@ function indexCardHtml(sym, ix) {
     const below = (ix.h52 - ix.p) / ix.h52 * 100, above = (ix.p - ix.l52) / ix.l52 * 100;
     range = below <= 0.05 ? 'At its 52-week high' : `${gt(below)}% below its 52-week high · ${gt(Math.max(0, above))}% above its 52-week low`;
   }
+  // Pre / AH line, like a stock tile's: the index is closed then, so the move is implied by its ETF (SPY, DIA, QQQ) and applied to the last regular level
+  const hasExt = !!(ix.ext && ix.ep != null && ix.ec != null), extName = ix.ext === 'pre' ? 'Pre' : 'AH';
+  const extTip = hasExt ? `${ix.ext === 'pre' ? 'Pre-market' : 'After-hours'} move, implied by ${ix.etf || 'its ETF'} trading (the index itself only trades 9:30 AM to 4:00 PM ET) and measured from the ${ix.ext === 'pre' ? 'last close' : 'close'}${ix.et ? '. Last trade ' + agoText(ix.et) : ''}` : '';
+  const extLine = hasExt ? `<div class="pline ext" title="${esc(extTip)}"><i>${extName}</i><span class="px">${n2(ix.ep)}</span><span class="dlt ${upDown(ix.ec)}">${ix.ech == null ? '' : signed(ix.ech) + ' '}${sign(ix.ec)} ${tri(ix.ec)}</span></div>` : '';
   const img = ix.icon ? `<img src="${esc(fav(ix.icon))}" data-next="" data-sym="${esc(ix.code || sym.replace('^', ''))}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="logoErr(this)">`
                       : `<div class="thumb-fallback">${esc(ix.code || sym.replace('^', ''))}</div>`;
   return `<article class="card index">
@@ -272,7 +276,7 @@ function indexCardHtml(sym, ix) {
     </div>
     <div class="body">
       <div class="ticker-row"><p class="ticker"><a href="https://finance.yahoo.com/quote/${q}" target="_blank" rel="noopener noreferrer" title="Open ${esc(ix.n || sym)} on Yahoo Finance">${esc(ix.n || sym)}<span class="arrow" aria-hidden="true">↗</span></a></p></div>
-      <div class="pricebox"><div class="pline" title="Index level and change since the previous close"><span class="px">${n2(ix.p)}</span>${pct == null ? '' : `<span class="dlt ${upDown(pct)}">${ix.ch == null ? '' : signed(ix.ch) + ' '}${sign(pct)} ${tri(pct)}</span>`}</div></div>
+      <div class="pricebox"><div class="pline" title="${hasExt ? 'Regular-session level and change' + (ix.ext === 'pre' ? ' (the last close)' : '') : 'Index level and change since the previous close'}"><span class="px">${n2(ix.p)}</span>${pct == null ? '' : `<span class="dlt ${upDown(pct)}">${ix.ch == null ? '' : signed(ix.ch) + ' '}${sign(pct)} ${tri(pct)}</span>`}</div>${extLine}</div>
       <p class="name">${esc(ix.fn || ix.n || '')}${ix.pc != null ? ` · Prev ${n2(ix.pc)}` : ''}</p>
       ${range ? `<p class="why">${range}</p>` : ''}
       <div class="chips">${chip('Open', ix.op, 'Today’s opening level, and how far it was from the previous close')}${chip('High', ix.hi, 'Today’s high, and how far it is from the previous close')}${chip('Low', ix.lo, 'Today’s low, and how far it is from the previous close')}</div>

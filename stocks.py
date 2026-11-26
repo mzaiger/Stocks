@@ -10,7 +10,7 @@ FMP (secret FMP_Key): biggest gainers, biggest losers, most actives, company web
 Yahoo Finance (no key, unofficial): one batch quote per run for volume, market cap and change.
 Gemini (secret GEMINI_KEY, see why.py): a short 'why is it trending' line per stock, from recent headlines.
 ApeWisdom (no key): Reddit mention counts.
-Index tiles (S&P 500, Dow, Nasdaq): Yahoo quotes saved in state/indices.json, shown ahead of rank 1 (ranks 0.1, 0.2, 0.3).
+Index tiles (S&P 500, Dow, Nasdaq): Yahoo quotes saved in state/indices.json, shown ahead of rank 1 (ranks 0.1, 0.2, 0.3); their pre-market / after-hours move is implied by SPY, DIA and QQQ.
 Each run saves one small snapshot in state/snaps/. The board is rebuilt from those snapshots, so every
 time frame (15 min ... 24 hours) is just a different slice of the same files.
 """
@@ -442,16 +442,17 @@ def fetch_yahoo_charts(symbols, meta, now):
 INDEX_ON = os.environ.get("INDICES", "1") != "0"                         # INDICES=0 switches the index tiles off
 INDEX_DEFS = [                                                           # edit this list to change, add or remove an index; both sites follow
     # sym = Yahoo symbol, n = big label, fn = full name, rk = rank (below 1, so the tile sorts ahead of the #1 stock), code = letters if the logo fails,
-    # icon = domain whose favicon is the tile image, site / tv / gf = official site, TradingView and Google Finance links
+    # icon = domain whose favicon is the tile image, site / tv / gf = official site, TradingView and Google Finance links,
+    # etf = the ETF whose pre-market / after-hours trades give the index its Pre / AH line (the index itself only trades 9:30 to 4:00)
     {"sym": "^GSPC", "n": "S&P 500", "fn": "S&P 500 Index", "rk": 0.1, "code": "S&P", "icon": "spglobal.com",
      "site": "https://www.spglobal.com/spdji/en/indices/equity/sp-500/", "tv": "https://www.tradingview.com/symbols/SPX/",
-     "gf": "https://www.google.com/finance/quote/.INX:INDEXSP"},
+     "gf": "https://www.google.com/finance/quote/.INX:INDEXSP", "etf": "SPY"},
     {"sym": "^DJI", "n": "DOW", "fn": "Dow Jones Industrial Average", "rk": 0.2, "code": "DJIA", "icon": "dowjones.com",
      "site": "https://www.spglobal.com/spdji/en/indices/equity/dow-jones-industrial-average/", "tv": "https://www.tradingview.com/symbols/DJ-DJI/",
-     "gf": "https://www.google.com/finance/quote/.DJI:INDEXDJX"},
+     "gf": "https://www.google.com/finance/quote/.DJI:INDEXDJX", "etf": "DIA"},
     {"sym": "^IXIC", "n": "NASDAQ", "fn": "Nasdaq Composite", "rk": 0.3, "code": "COMP", "icon": "nasdaq.com",      # for the Nasdaq-100 use ^NDX
      "site": "https://www.nasdaq.com/market-activity/index/comp", "tv": "https://www.tradingview.com/symbols/NASDAQ-IXIC/",
-     "gf": "https://www.google.com/finance/quote/.IXIC:INDEXNASDAQ"},
+     "gf": "https://www.google.com/finance/quote/.IXIC:INDEXNASDAQ", "etf": "QQQ"},          # QQQ tracks the Nasdaq-100, a close stand-in for the Composite
 ]
 
 
@@ -498,10 +499,39 @@ def idx_from_chart(res, now, ses):
                    idx_ts(m.get("regularMarketTime")), "", now, ses)
 
 
+def idx_ext(row, q):
+    """The index's pre-market / after-hours move, implied by its ETF (the index itself is closed then). The ETF quote is read the way
+    fetch_yahoo reads a stock's: pre-market only while the state is PRE and it has traded, the last after-hours trade kept overnight and on
+    weekends, one from before the last close ignored. Both moves are measured from the last regular-session level, as on Yahoo.
+    Returns the fields to add to the index row, or None in the regular session / when the ETF has no extended-hours trade."""
+    state = str(q.get("marketState") or "").upper()
+    pre, post = num(q.get("preMarketPrice")), num(q.get("postMarketPrice"))
+    rt, pt = num(q.get("regularMarketTime")), num(q.get("postMarketTime"))
+    if state == "PRE" and pre:
+        kind, px, pct, t = "pre", pre, num(q.get("preMarketChangePercent")), q.get("preMarketTime")
+    elif state in ("POST", "POSTPOST", "CLOSED", "PREPRE") and post and not (pt and rt and pt < rt):
+        kind, px, pct, t = "post", post, num(q.get("postMarketChangePercent")), q.get("postMarketTime")
+    else:
+        return None
+    base = num(q.get("regularMarketPrice"))
+    if pct is None and base:
+        pct = (px / base - 1) * 100
+    if pct is None or not row.get("p"):
+        return None
+    level = row["p"] * (1 + pct / 100)
+    out = {"ext": kind, "ep": round(level, 2), "ech": round(level - row["p"], 2), "ec": round(pct, 4), "etf": str(q.get("symbol") or "")}
+    when = idx_ts(t)
+    if when:
+        out["et"] = iso(when)
+    return out
+
+
 def fetch_indices(meta, now, ses):
     """Quotes for the index tiles, {Yahoo symbol: row}: one batch quote, then the chart feed one by one for any index it missed.
     Costs no FMP requests. {} if Yahoo refuses (the tiles then keep their last saved values and show their real age)."""
     syms = [d["sym"] for d in INDEX_DEFS]
+    etfs = [d["etf"] for d in INDEX_DEFS if d.get("etf")]
+    etf_q = {}
     im = meta.setdefault("yahoo_idx", {})
     if im.get("fail_t") and (now - parse_iso(im["fail_t"])).total_seconds() < YAHOO_RETRY_MIN * 60:
         return {}
@@ -512,10 +542,12 @@ def fetch_indices(meta, now, ses):
             cr = sess.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=15)
             crumb = cr.text.strip()
             if cr.status_code == 200 and crumb and len(crumb) <= 40 and " " not in crumb and "<" not in crumb:
-                r = sess.get("https://query1.finance.yahoo.com/v7/finance/quote", params={"symbols": ",".join(syms), "crumb": crumb}, timeout=20)
+                r = sess.get("https://query1.finance.yahoo.com/v7/finance/quote", params={"symbols": ",".join(syms + etfs), "crumb": crumb}, timeout=20)
                 if r.status_code == 200:
                     for q in (r.json().get("quoteResponse") or {}).get("result") or []:
                         sym = str(q.get("symbol") or "").upper()
+                        if sym in etfs:
+                            etf_q[sym] = q
                         row = idx_from_quote(q, now, ses) if sym in syms else None
                         if row:
                             out[sym] = row
@@ -532,11 +564,21 @@ def fetch_indices(meta, now, ses):
             time.sleep(0.35)
     except Exception as e:
         print(f"  Yahoo index quotes not available ({type(e).__name__})")
+    for d in INDEX_DEFS:                                                     # 3) Pre / AH line: only while the index itself is closed
+        row, q = out.get(d["sym"]), etf_q.get(d.get("etf"))
+        if row and q and not row.get("live"):
+            row.update(idx_ext(row, q) or {})
     if out:
         im.pop("fail_t", None)
     else:
         im["fail_t"] = iso(now)
     return out
+
+
+def idx_text(d, row):
+    """One index for the log: 'S&P 500 6,973.61 (+0.89%)', plus ' AH +0.12% via SPY' when it has an extended-hours move."""
+    ext = f" {'Pre' if row['ext'] == 'pre' else 'AH'} {row['ec']:+.2f}% via {row.get('etf', '?')}" if row.get("ext") and row.get("ec") is not None else ""
+    return f"{d['n']} {row['p']:,.2f} ({row.get('c', 0):+.2f}%){ext}"
 
 
 def update_indices(meta, now, ses):
@@ -549,7 +591,7 @@ def update_indices(meta, now, ses):
     saved = read(STATE / "indices.json", {})
     saved.update(fresh)
     write(STATE / "indices.json", saved)
-    print("  Indices: " + ", ".join(f"{d['n']} {fresh[d['sym']]['p']:,.2f} ({fresh[d['sym']].get('c', 0):+.2f}%)" for d in INDEX_DEFS if d["sym"] in fresh))
+    print("  Indices: " + ", ".join(idx_text(d, fresh[d["sym"]]) for d in INDEX_DEFS if d["sym"] in fresh))
 
 
 def board_indices():
@@ -1096,7 +1138,7 @@ def check():
           + f"  (Chrome impersonation via curl_cffi: {'on' if creq else 'OFF - pip install curl_cffi'})")
     _now = datetime.now(timezone.utc)
     ix = fetch_indices({}, _now, session_of(_now.astimezone(ET)))
-    print("  Yahoo index quotes: " + (", ".join(f"{d['n']} {ix[d['sym']]['p']:,.2f}" for d in INDEX_DEFS if d["sym"] in ix) if ix else "not available from here"))
+    print("  Yahoo index quotes: " + ("; ".join(idx_text(d, ix[d["sym"]]) for d in INDEX_DEFS if d["sym"] in ix) if ix else "not available from here"))
     items = why.headlines("AAPL", "Apple", datetime.now(timezone.utc))
     print(f"  headlines (Yahoo/Google News RSS): {len(items)} found" + (f", newest: {items[0][0][:70]}" if items else ""))
     print("  GEMINI_KEY: " + ("set" if os.environ.get("GEMINI_KEY", "").strip() else "NOT set (no 'why trending' lines)"))
@@ -1177,11 +1219,19 @@ def demo():
     write(STATE / "why.json", {s: {"d": texts[i % len(texts)], "t": iso(datetime.now(timezone.utc) - timedelta(minutes=20 * (i % 9)))} for i, s in enumerate(list(names)[:24])})
     base = {"^GSPC": 6912.4, "^DJI": 50214.6, "^IXIC": 23688.2}
     demo_idx, tnow = {}, datetime.now(timezone.utc)
+    dses = session_of(tnow.astimezone(ET))
     for d in INDEX_DEFS:
         pc = base.get(d["sym"], 10000.0)
         p = pc * (1 + rnd.uniform(-0.006, 0.009))
         hi, lo = max(p, pc) * (1 + rnd.uniform(0.0005, 0.003)), min(p, pc) * (1 - rnd.uniform(0.0005, 0.003))
-        demo_idx[d["sym"]] = idx_row(p, pc, None, None, pc * (1 + rnd.uniform(-0.002, 0.003)), hi, lo, pc * 1.012, pc * 0.78, tnow - timedelta(minutes=3), "REGULAR", tnow, "reg")
+        row = idx_row(p, pc, None, None, pc * (1 + rnd.uniform(-0.002, 0.003)), hi, lo, pc * 1.012, pc * 0.78, tnow - timedelta(minutes=3),
+                      "REGULAR" if dses == "reg" else "CLOSED", tnow, dses)
+        if not row["live"]:                                                  # outside the regular session: a Pre or AH line like a stock tile has
+            pct = rnd.uniform(-0.45, 0.55)
+            level = row["p"] * (1 + pct / 100)
+            row.update(ext="pre" if dses == "pre" else "post", ep=round(level, 2), ech=round(level - row["p"], 2), ec=round(pct, 4),
+                       etf=d.get("etf", ""), et=iso(tnow - timedelta(minutes=2)))
+        demo_idx[d["sym"]] = row
     write(STATE / "indices.json", demo_idx)
     b = build_board()
     print(f"Demo data written to {DATA}/board.json ({len(b['stocks'])} stocks, {len(times)} snapshots). "

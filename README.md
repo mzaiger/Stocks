@@ -79,7 +79,7 @@ Notes:
 |---|---|---|---|
 | FMP | 3 (gainers, losers, actives) plus up to 4 profile lookups and a few single quotes if the budget allows | 192 plus the optional ones, capped by the script | 250 per day |
 | ApeWisdom | 1 | 64 | none stated |
-| Yahoo index quotes | 3 (cookie, crumb, one batch quote for the three indices), plus up to 3 chart lookups only for an index the batch missed | about 200 | same unofficial feed as below |
+| Yahoo index quotes | 3 (cookie, crumb, one batch quote for the three indices and their three ETFs), plus up to 3 chart lookups only for an index the batch missed | about 200 | same unofficial feed as below |
 | Yahoo quotes | 3 (cookie, crumb, batch quote) plus up to 60 one-by-one lookups only for stocks the batch missed | about 200 to 5,000 | not published; about 2,000 per hour per IP is reported |
 | Yahoo / Google News headlines | 1 or 2 per stock that needs a "why trending" line (at most 25) | a few hundred | none stated |
 | **Gemini** | **1 call per run, rewriting the line for every stock on the board** | **64** | free tier is reported at about 500 per day and 10 per minute for the flash-lite models; Google shows the real figures in AI Studio |
@@ -160,16 +160,17 @@ Reddit tickers get their price, change, volume and market cap from the screener 
 
 Three extra tiles that are not part of the rankings. They lead the **All** tab (and the Trendslope Live Stream) because their ranks are **0.1, 0.2 and 0.3**, below the #1 stock, so they sort first under both Ranking and Newest. The pill on the tile says INDEX instead of a number. The other tabs do not show them; star one and it also appears under **★ Favorites**.
 
-| Tile | Yahoo symbol | Rank |
-|---|---|---|
-| S&P 500 | `^GSPC` | 0.1 |
-| DOW (Dow Jones Industrial Average) | `^DJI` | 0.2 |
-| NASDAQ (Nasdaq Composite) | `^IXIC` | 0.3 |
+| Tile | Yahoo symbol | Pre / AH from | Rank |
+|---|---|---|---|
+| S&P 500 | `^GSPC` | SPY | 0.1 |
+| DOW (Dow Jones Industrial Average) | `^DJI` | DIA | 0.2 |
+| NASDAQ (Nasdaq Composite) | `^IXIC` | QQQ | 0.3 |
 
-* **Data:** Yahoo Finance's keyless quote feed, so it costs no FMP requests. One batch quote asks for all three symbols; for an index it does not return, Yahoo's chart feed is asked instead. If both fail, the tile keeps its last saved values and its time shows their real age. The newest quote of each index is kept in `state/indices.json` and copied into `data/board.json` under `indices` on every run (a failure here never loses the stock snapshot).
-* **Tile:** the index level with the point and percent change since the previous close and an arrow; the full name and the previous close; one line on how far the level is from its 52-week high and low; **Open**, **High** and **Low** with each one's distance from the previous close; a green dot and "Open" or "Closed" with how long ago Yahoo last updated the level (so at night and on weekends it shows the last close); and links to the official index site, Yahoo Finance, TradingView and Google Finance. The tile image is the favicon of the index provider's site (S&P Global, Dow Jones, Nasdaq), with the letters as the fallback. Pre-market and after-hours do not apply: the indices only move in the regular session.
+* **Data:** Yahoo Finance's keyless quote feed, so it costs no FMP requests. One batch quote asks for the three indices and their three ETFs; for an index it does not return, Yahoo's chart feed is asked instead. If both fail, the tile keeps its last saved values and its time shows their real age. The newest quote of each index is kept in `state/indices.json` and copied into `data/board.json` under `indices` on every run (a failure here never loses the stock snapshot).
+* **Tile:** the index level with the point and percent change since the previous close and an arrow; the full name and the previous close; one line on how far the level is from its 52-week high and low; **Open**, **High** and **Low** with each one's distance from the previous close; a green dot and "Open" or "Closed" with how long ago Yahoo last updated the level (so at night and on weekends it shows the last close); and links to the official index site, Yahoo Finance, TradingView and Google Finance. The tile image is the favicon of the index provider's site (S&P Global, Dow Jones, Nasdaq), with the letters as the fallback.
+* **Pre and AH:** the indices only trade 9:30 AM to 4:00 PM ET, so outside the regular session the tile gets a **Pre** or **AH** line like a stock tile (the badge, a level, points and percent) and the move comes from the index's ETF: SPY for the S&P 500, DIA for the Dow, QQQ for the Nasdaq (the Nasdaq-100, a close stand-in for the Composite). The ETF's quote is read the way a stock's is: pre-market only once the ETF has traded, the last after-hours trade stays overnight and on weekends, one from before the last close is ignored. As on Yahoo the move is measured from the last regular level (the close for AH, the last close for Pre) and applied to the index, `level × (1 + ETF %)`, so the level on that line is implied, not an index print; hover it for the ETF and the time of its last trade. There is no line during the regular session. On an ETF's ex-dividend day its pre-market move can read lower by about the dividend (roughly 0.3% for SPY, quarterly). Futures were left out because their change is measured from the previous settlement, which would repeat the day's move instead of showing the Pre / AH one.
 * **No scores or filters:** index tiles are not counted in "N stocks", are not scored, and are not run through the price, market cap or volume filters.
-* **Change them:** edit `INDEX_DEFS` in `stocks.py` (Yahoo symbol, label, full name, rank, icon domain, links). For example swap `^IXIC` for `^NDX` (Nasdaq-100) or add `^RUT` with rank 0.4. Both this page and Trendslope draw whatever `indices` holds, so no page edit is needed. `INDICES=0` in the workflow `env` turns the tiles off. `python stocks.py check` prints the three index levels it can reach.
+* **Change them:** edit `INDEX_DEFS` in `stocks.py` (Yahoo symbol, label, full name, rank, icon domain, links, and the ETF for the Pre / AH line). For example swap `^IXIC` for `^NDX` (Nasdaq-100, with `QQQ`) or add `^RUT` with rank 0.4 (and `IWM`). Both this page and Trendslope draw whatever `indices` holds, so no page edit is needed. `INDICES=0` in the workflow `env` turns the tiles off. `python stocks.py check` prints the three index levels it can reach.
 
 ## The page
 
